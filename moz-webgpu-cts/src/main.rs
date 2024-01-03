@@ -138,24 +138,48 @@ fn run(cli: Cli) -> ExitCode {
         let webgpu_cts_meta_parent_dir =
             { path!(&gecko_checkout | "testing" | "web-platform" | "mozilla" | "meta" | "webgpu") };
 
+        read_gecko_files_at(&gecko_checkout, &webgpu_cts_meta_parent_dir, "**/*.ini")
+    };
+
+    let read_and_parse_all_metadata = || -> Result<_, AlreadyReportedToCommandline> {
+        let mut started_parsing = false;
         let mut found_err = false;
-        let collected =
-            read_gecko_files_at(&gecko_checkout, &webgpu_cts_meta_parent_dir, "**/*.ini")?
-                .filter_map(|res| match res {
-                    Ok((p, _contents)) if p.ends_with("__dir__.ini") => None,
-                    Ok(ok) => Some(ok),
-                    Err(AlreadyReportedToCommandline) => {
-                        found_err = true;
-                        None
+        let files_by_path = read_metadata()?
+            .filter_map(|res| match res {
+                Ok((p, _contents)) if p.ends_with("__dir__.ini") => None,
+                Ok((path, file_contents)) => {
+                    found_err = true;
+                    let path = Arc::new(path);
+                    let file_contents = Arc::new(file_contents);
+
+                    if !started_parsing {
+                        log::info!("parsing metadata…");
+                        started_parsing = true;
                     }
-                })
-                .map(|(p, fc)| (Arc::new(p), Arc::new(fc)))
-                .collect::<IndexMap<_, _>>();
+
+                    log::debug!("parsing metadata at {}", path.display());
+                    match chumsky::Parser::parse(&metadata::File::parser(), &*file_contents)
+                        .into_result()
+                    {
+                        Err(errors) => {
+                            found_err = true;
+                            render_metadata_parse_errors(&path, &file_contents, errors);
+                            None
+                        }
+                        Ok(file) => Some((path, file)),
+                    }
+                }
+                Err(AlreadyReportedToCommandline) => None,
+            })
+            .collect::<IndexMap<_, File>>();
         if found_err {
-            Err(AlreadyReportedToCommandline)
-        } else {
-            Ok(collected)
+            log::error!(concat!(
+                "found one or more failures while reading and parsing metadata, ",
+                "see above for more details"
+            ));
+            return Err(AlreadyReportedToCommandline);
         }
+        Ok(files_by_path)
     };
 
     fn render_metadata_parse_errors<'a>(
@@ -276,39 +300,9 @@ fn run(cli: Cli) -> ExitCode {
             log::trace!("working with the following WPT report files: {exec_report_paths:#?}");
             log::info!("working with {} WPT report files", exec_report_paths.len());
 
-            let meta_files_by_path = {
-                let raw_meta_files_by_path = match read_metadata() {
-                    Ok(paths) => paths,
-                    Err(AlreadyReportedToCommandline) => return ExitCode::FAILURE,
-                };
-
-                log::info!("parsing metadata…");
-                let mut found_parse_err = false;
-
-                let files = raw_meta_files_by_path
-                    .into_iter()
-                    .filter_map(|(path, file_contents)| {
-                        match chumsky::Parser::parse(&File::parser(), &*file_contents).into_result()
-                        {
-                            Err(errors) => {
-                                found_parse_err = true;
-                                render_metadata_parse_errors(&path, &file_contents, errors);
-                                None
-                            }
-                            Ok(file) => Some((path, file)),
-                        }
-                    })
-                    .collect::<IndexMap<_, _>>();
-
-                if found_parse_err {
-                    log::error!(concat!(
-                        "found one or more failures while parsing metadata, ",
-                        "see above for more details"
-                    ));
-                    return ExitCode::FAILURE;
-                }
-
-                files
+            let meta_files_by_path = match read_and_parse_all_metadata() {
+                Ok(paths) => paths,
+                Err(AlreadyReportedToCommandline) => return ExitCode::FAILURE,
             };
 
             #[derive(Debug, Default)]
@@ -780,7 +774,17 @@ fn run(cli: Cli) -> ExitCode {
             };
             log::info!("formatting metadata in-place…");
             let mut fmt_err_found = false;
-            for (path, file_contents) in raw_test_files_by_path {
+            for res in raw_test_files_by_path {
+                let (path, file_contents) = match res {
+                    Ok(ok) => ok,
+                    Err(AlreadyReportedToCommandline) => {
+                        fmt_err_found = true;
+                        continue;
+                    }
+                };
+                let path = Arc::new(path);
+                let file_contents = Arc::new(file_contents);
+
                 match chumsky::Parser::parse(&File::parser(), &*file_contents).into_result() {
                     Err(errors) => {
                         fmt_err_found = true;
@@ -812,22 +816,18 @@ fn run(cli: Cli) -> ExitCode {
                 orig_path: Arc<PathBuf>,
                 inner: Test,
             }
-            let tests_by_name = {
-                let mut found_parse_err = false;
-                let raw_test_files_by_path = match read_metadata() {
-                    Ok(paths) => paths,
-                    Err(AlreadyReportedToCommandline) => return ExitCode::FAILURE,
-                };
-                let extracted = raw_test_files_by_path
-                    .iter()
-                    .filter_map(|(path, file_contents)| {
-                        match chumsky::Parser::parse(&metadata::File::parser(), file_contents)
-                            .into_result()
-                        {
-                            Ok(File {
+            let tests_by_name = match read_and_parse_all_metadata().map(|tests| {
+                tests
+                    .into_iter()
+                    .flat_map(
+                        |(
+                            path,
+                            metadata::File {
                                 properties: _,
                                 tests,
-                            }) => Some(tests.into_iter().map({
+                            },
+                        )| {
+                            Some(tests.into_iter().map({
                                 let gecko_checkout = &gecko_checkout;
                                 move |(name, inner)| {
                                     let SectionHeader(name) = &name;
@@ -845,24 +845,14 @@ fn run(cli: Cli) -> ExitCode {
                                         },
                                     )
                                 }
-                            })),
-                            Err(errors) => {
-                                found_parse_err = true;
-                                render_metadata_parse_errors(path, file_contents, errors);
-                                None
-                            }
-                        }
-                    })
+                            }))
+                        },
+                    )
                     .flatten()
-                    .collect::<BTreeMap<_, _>>();
-                if found_parse_err {
-                    log::error!(concat!(
-                        "found one or more failures while parsing metadata, ",
-                        "see above for more details"
-                    ));
-                    return ExitCode::FAILURE;
-                }
-                extracted
+                    .collect::<BTreeMap<_, _>>()
+            }) {
+                Ok(paths) => paths,
+                Err(AlreadyReportedToCommandline) => return ExitCode::FAILURE,
             };
 
             log::info!(concat!(
@@ -984,13 +974,12 @@ fn run(cli: Cli) -> ExitCode {
             let mut analysis = Analysis::default();
             for (test_name, test) in tests_by_name {
                 let TaggedTest {
-                    orig_path: _,
-                    inner: test,
-                } = test;
-
-                let Test {
-                    properties,
-                    subtests,
+                    orig_path,
+                    inner:
+                        Test {
+                            properties,
+                            subtests,
+                        },
                 } = test;
 
                 let TestProps {
