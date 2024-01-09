@@ -61,6 +61,7 @@ pub struct FileProps {
     #[allow(clippy::type_complexity)]
     pub prefs: Option<PropertyValue<Expr<Value<'static>>, Vec<(String, String)>>>,
     pub tags: Option<PropertyValue<Expr<Value<'static>>, Vec<String>>>,
+    pub implementation_status: Option<PropertyValue<Expr<Value<'static>>, ImplementationStatus>>,
 }
 
 impl<'a> Properties<'a> for FileProps {
@@ -128,7 +129,7 @@ impl<'a> Properties<'a> for FileProps {
         let disabled = helper
             .parser(
                 keyword("disabled").to(()),
-                conditional_term,
+                conditional_term.clone(),
                 any()
                     .and_is(newline().or(end()).not())
                     .repeated()
@@ -138,7 +139,22 @@ impl<'a> Properties<'a> for FileProps {
             )
             .map(|((), is_disabled)| FileProp::Disabled(is_disabled));
 
-        choice((prefs, tags, disabled))
+        let implementation_status = helper
+            .parser(
+                just("implementation-status").to(()),
+                conditional_term,
+                choice((
+                    just("default").to(ImplementationStatus::Default),
+                    just("backlog").to(ImplementationStatus::Backlog),
+                    just("implementing").to(ImplementationStatus::Implementing),
+                    just("not-implementing").to(ImplementationStatus::NotImplementing),
+                )),
+            )
+            .map(|((), implementation_status)| {
+                FileProp::ImplementationStatus(implementation_status)
+            });
+
+        choice((prefs, tags, disabled, implementation_status))
             .map_with(|prop, e| (e.span(), prop))
             .boxed()
     }
@@ -146,6 +162,7 @@ impl<'a> Properties<'a> for FileProps {
     fn add_property(&mut self, prop: Self::ParsedProperty, emitter: &mut Emitter<Rich<'a, char>>) {
         let (span, prop) = prop;
         let Self {
+            implementation_status,
             is_disabled,
             prefs,
             tags,
@@ -165,6 +182,11 @@ impl<'a> Properties<'a> for FileProps {
             }};
         }
         match prop {
+            FileProp::ImplementationStatus(new_impl_status) => check_dupe_then_insert!(
+                new_impl_status,
+                implementation_status,
+                "implementation-status"
+            ),
             FileProp::Prefs(new_prefs) => check_dupe_then_insert!(new_prefs, prefs, "prefs"),
             FileProp::Tags(new_tags) => check_dupe_then_insert!(new_tags, tags, "tags"),
             FileProp::Disabled(new_is_disabled) => {
@@ -319,6 +341,94 @@ fn file_props() {
     "###
     );
 
+    insta::assert_debug_snapshot!(
+        parser.parse("implementation-status: default"),
+        @r###"
+    ParseResult {
+        output: Some(
+            (
+                0..30,
+                ImplementationStatus(
+                    Unconditional(
+                        Default,
+                    ),
+                ),
+            ),
+        ),
+        errs: [],
+    }
+    "###
+    );
+
+    insta::assert_debug_snapshot!(
+        parser.parse("implementation-status: implementing"),
+        @r###"
+    ParseResult {
+        output: Some(
+            (
+                0..35,
+                ImplementationStatus(
+                    Unconditional(
+                        Implementing,
+                    ),
+                ),
+            ),
+        ),
+        errs: [],
+    }
+    "###
+    );
+
+    insta::assert_debug_snapshot!(
+        parser.parse("implementation-status: not-implementing"),
+        @r###"
+    ParseResult {
+        output: Some(
+            (
+                0..39,
+                ImplementationStatus(
+                    Unconditional(
+                        NotImplementing,
+                    ),
+                ),
+            ),
+        ),
+        errs: [],
+    }
+    "###
+    );
+
+    insta::assert_debug_snapshot!(
+        parser.parse("implementation-status: backlog"),
+        @r###"
+    ParseResult {
+        output: Some(
+            (
+                0..30,
+                ImplementationStatus(
+                    Unconditional(
+                        Backlog,
+                    ),
+                ),
+            ),
+        ),
+        errs: [],
+    }
+    "###
+    );
+
+    insta::assert_debug_snapshot!(
+        parser.parse("implementation-status: derp"),
+        @r###"
+    ParseResult {
+        output: None,
+        errs: [
+            found ''r'' at 25..26 expected ''f'',
+        ],
+    }
+    "###
+    );
+
     let parser = parser.padded();
 
     insta::assert_debug_snapshot!(
@@ -349,6 +459,7 @@ pub enum FileProp {
     Prefs(PropertyValue<Expr<Value<'static>>, Vec<(String, String)>>),
     Tags(PropertyValue<Expr<Value<'static>>, Vec<String>>),
     Disabled(PropertyValue<Expr<Value<'static>>, String>),
+    ImplementationStatus(PropertyValue<Expr<Value<'static>>, ImplementationStatus>),
 }
 
 fn format_file_properties(props: &FileProps) -> impl Display + '_ {
@@ -414,10 +525,20 @@ fn format_file_properties(props: &FileProps) -> impl Display + '_ {
     }
     lazy_format!(|f| {
         let FileProps {
+            implementation_status,
             is_disabled,
             prefs,
             tags,
         } = props;
+
+        if let Some(implementation_status) = implementation_status {
+            write_prop_val(
+                "implementation-status",
+                implementation_status,
+                Display::fmt,
+                f,
+            )?;
+        }
 
         if let Some(prefs) = prefs {
             write_prop_val(
@@ -449,6 +570,37 @@ fn format_file_properties(props: &FileProps) -> impl Display + '_ {
 
         Ok(())
     })
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum ImplementationStatus {
+    /// Indicates that functionality governing test(s) is implemented, and generally expected to
+    /// conform to tests.
+    #[default]
+    Default,
+    /// Indicates that functionality governing test(s) is currently being implemented.
+    Implementing,
+    /// Indicates that functionality governing test(s) are not yet implemented, but are intended
+    /// to be.
+    Backlog,
+    /// Indicates that functionality governing test(s) are not implemented, with no plans for
+    /// implementation.
+    NotImplementing,
+}
+
+impl Display for ImplementationStatus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Default => "default",
+                Self::Implementing => "implementing",
+                Self::Backlog => "backlog",
+                Self::NotImplementing => "not-implementing",
+            }
+        )
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1109,6 +1261,7 @@ r#"
                     is_disabled: None,
                     prefs: None,
                     tags: None,
+                    implementation_status: None,
                 },
                 tests: {
                     "asdf": Test {
@@ -1141,6 +1294,7 @@ r#"
                     is_disabled: None,
                     prefs: None,
                     tags: None,
+                    implementation_status: None,
                 },
                 tests: {
                     "asdf": Test {
@@ -1181,6 +1335,7 @@ r#"
                     is_disabled: None,
                     prefs: None,
                     tags: None,
+                    implementation_status: None,
                 },
                 tests: {
                     "asdf": Test {
