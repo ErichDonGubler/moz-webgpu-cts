@@ -47,6 +47,8 @@ use whippit::{
 struct Cli {
     #[clap(long)]
     gecko_checkout: Option<PathBuf>,
+    #[clap(long)]
+    servo: bool,
     #[clap(subcommand)]
     subcommand: Subcommand,
 }
@@ -124,6 +126,7 @@ fn run(cli: Cli) -> ExitCode {
     let Cli {
         gecko_checkout,
         subcommand,
+        servo,
     } = cli;
 
     let gecko_checkout = match gecko_checkout
@@ -135,8 +138,11 @@ fn run(cli: Cli) -> ExitCode {
     };
 
     let read_metadata = || -> Result<_, AlreadyReportedToCommandline> {
-        let webgpu_cts_meta_parent_dir =
-            { path!(&gecko_checkout | "testing" | "web-platform" | "mozilla" | "meta" | "webgpu") };
+        let webgpu_cts_meta_parent_dir = if !servo {
+            path!(&gecko_checkout | "testing" | "web-platform" | "mozilla" | "meta" | "webgpu")
+        } else {
+            path!(&gecko_checkout | "tests" | "wpt" | "webgpu" | "meta" | "webgpu")
+        };
 
         let mut found_err = false;
         let collected =
