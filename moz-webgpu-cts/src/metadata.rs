@@ -977,6 +977,7 @@ where
 #[serde(rename_all = "UPPERCASE")]
 pub enum TestOutcome {
     Ok,
+    Fail,
     Timeout,
     Crash,
     Error,
@@ -996,6 +997,7 @@ impl Display for TestOutcome {
             "{}",
             match self {
                 Self::Ok => "OK",
+                Self::Fail => "FAIL",
                 Self::Timeout => "TIMEOUT",
                 Self::Crash => "CRASH",
                 Self::Error => "ERROR",
@@ -1014,6 +1016,7 @@ impl<'a> Properties<'a> for TestProps<TestOutcome> {
             helper,
             choice((
                 keyword("OK").to(TestOutcome::Ok),
+                keyword("FAIL").to(TestOutcome::Fail),
                 keyword("CRASH").to(TestOutcome::Crash),
                 keyword("TIMEOUT").to(TestOutcome::Timeout),
                 keyword("ERROR").to(TestOutcome::Error),
@@ -1478,6 +1481,40 @@ r#"
                             },
                         },
                     },
+                },
+            ),
+        ),
+        errs: [],
+    }
+    "###
+    );
+    assert_debug_snapshot!(
+        parser().parse(r#"
+[canvas_complex_rgba8unorm_store.https.html]
+  expected: FAIL
+
+"#),
+    @r###"
+    ParseResult {
+        output: Some(
+            (
+                "canvas_complex_rgba8unorm_store.https.html",
+                Test {
+                    properties: TestProps {
+                        is_disabled: false,
+                        expectations: Some(
+                            NormalizedExpectationPropertyValue(
+                                Collapsed(
+                                    Collapsed(
+                                        [
+                                            Fail,
+                                        ],
+                                    ),
+                                ),
+                            ),
+                        ),
+                    },
+                    subtests: {},
                 },
             ),
         ),
