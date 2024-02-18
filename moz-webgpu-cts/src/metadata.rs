@@ -977,11 +977,12 @@ where
 #[serde(rename_all = "UPPERCASE")]
 pub enum TestOutcome {
     Ok,
-    Fail,
     Timeout,
     Crash,
     Error,
     Skip,
+    Pass,
+    Fail,
 }
 
 impl Default for TestOutcome {
@@ -997,11 +998,12 @@ impl Display for TestOutcome {
             "{}",
             match self {
                 Self::Ok => "OK",
-                Self::Fail => "FAIL",
                 Self::Timeout => "TIMEOUT",
                 Self::Crash => "CRASH",
                 Self::Error => "ERROR",
                 Self::Skip => "SKIP",
+                Self::Pass => "PASS",
+                Self::Fail => "FAIL",
             }
         )
     }
@@ -1016,11 +1018,12 @@ impl<'a> Properties<'a> for TestProps<TestOutcome> {
             helper,
             choice((
                 keyword("OK").to(TestOutcome::Ok),
-                keyword("FAIL").to(TestOutcome::Fail),
                 keyword("CRASH").to(TestOutcome::Crash),
                 keyword("TIMEOUT").to(TestOutcome::Timeout),
                 keyword("ERROR").to(TestOutcome::Error),
                 keyword("SKIP").to(TestOutcome::Skip),
+                keyword("PASS").to(TestOutcome::Pass),
+                keyword("FAIL").to(TestOutcome::Fail),
             )),
         )
         .boxed()
@@ -1219,24 +1222,6 @@ r#"
     );
 
     let parser = || single_leading_newline(Test::parser());
-
-    assert_debug_snapshot!(
-        parser().parse(
-r#"
-[asdf]
-  # Incorrect; `PASS` isn't a valid test outcome (but it _is_ a valid subtest outcome).
-  expected: PASS
-"#
-        ),
-        @r###"
-    ParseResult {
-        output: None,
-        errs: [
-            found end of input at 108..112 expected something else,
-        ],
-    }
-    "###
-    );
 
     assert_debug_snapshot!(
         parser().parse(
@@ -1491,7 +1476,7 @@ r#"
     assert_debug_snapshot!(
         parser().parse(r#"
 [canvas_complex_rgba8unorm_store.https.html]
-  expected: FAIL
+  expected: [PASS, FAIL, CRASH]
 
 "#),
     @r###"
@@ -1507,6 +1492,8 @@ r#"
                                 Collapsed(
                                     Collapsed(
                                         [
+                                            Crash,
+                                            Pass,
                                             Fail,
                                         ],
                                     ),

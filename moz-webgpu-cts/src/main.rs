@@ -1069,14 +1069,6 @@ fn run(cli: Cli) -> ExitCode {
                                 // We skip this because this test _should_ contain subtests with
                                 // `TIMEOUT` and `NOTRUN`, so we shouldn't actually miss anything.
                                 TestOutcome::Timeout => (),
-                                TestOutcome::Fail => receiver(&mut |analysis| {
-                                    insert_in_test_set(
-                                        &mut analysis.tests_with_fails,
-                                        test_name,
-                                        expectation,
-                                        outcome,
-                                    )
-                                }),
                                 TestOutcome::Crash => receiver(&mut |analysis| {
                                     insert_in_test_set(
                                         &mut analysis.tests_with_crashes,
@@ -1096,6 +1088,15 @@ fn run(cli: Cli) -> ExitCode {
                                 TestOutcome::Skip => receiver(&mut |analysis| {
                                     insert_in_test_set(
                                         &mut analysis.tests_with_disabled_or_skip,
+                                        test_name,
+                                        expectation,
+                                        outcome,
+                                    )
+                                }),
+                                TestOutcome::Pass => (),
+                                TestOutcome::Fail => receiver(&mut |analysis| {
+                                    insert_in_test_set(
+                                        &mut analysis.tests_with_fails,
                                         test_name,
                                         expectation,
                                         outcome,
