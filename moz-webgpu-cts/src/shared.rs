@@ -488,17 +488,23 @@ impl<'a> TestPath<'a> {
         })
     }
 
-    pub(crate) fn rel_metadata_path_fx(&self) -> impl Display + '_ {
+    pub(crate) fn rel_metadata_path_fx(&self, servo: bool) -> impl Display + '_ {
         let Self {
             path,
             variant: _,
             scope,
         } = self;
 
-        let scope_dir = match scope {
-            // TODO: servo
-            TestScope::Public => SCOPE_DIR_FX_PUBLIC_COMPONENTS,
-            TestScope::FirefoxPrivate => SCOPE_DIR_FX_PRIVATE_COMPONENTS,
+        let scope_dir = if !servo {
+            match scope {
+                TestScope::Public => SCOPE_DIR_FX_PUBLIC_COMPONENTS,
+                TestScope::FirefoxPrivate => SCOPE_DIR_FX_PRIVATE_COMPONENTS,
+            }
+        } else {
+            match scope {
+                TestScope::Public => SCOPE_DIR_SERVO_PUBLIC_COMPONENTS,
+                TestScope::FirefoxPrivate => todo!(),
+            }
         }
         .iter()
         .chain(&["meta"])

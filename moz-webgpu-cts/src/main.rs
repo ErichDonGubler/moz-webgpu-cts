@@ -20,7 +20,7 @@ use std::{
     fmt::{self, Debug, Display, Formatter},
     fs,
     hash::Hash,
-    io::{self, BufReader, BufWriter},
+    io::{self, BufReader, BufWriter, Read},
     path::{Path, PathBuf},
     process::ExitCode,
     sync::{mpsc::channel, Arc},
@@ -426,11 +426,13 @@ fn run(cli: Cli) -> ExitCode {
                 .into_par_iter()
                 .for_each_with(exec_reports_sender, |sender, path| {
                     let res = fs::File::open(&path)
-                        .map(BufReader::new)
                         .map_err(Report::msg)
                         .wrap_err("failed to open file")
-                        .and_then(|reader| {
-                            serde_json::from_reader::<_, ExecutionReport>(reader)
+                        .and_then(|mut f| {
+                            let mut s = String::new();
+                            f.read_to_string(&mut s).unwrap();
+                            let first = s.lines().next().unwrap();
+                            serde_json::from_str::<ExecutionReport>(first)
                                 .into_diagnostic()
                                 .wrap_err("failed to parse JSON")
                         })
@@ -712,7 +714,7 @@ fn run(cli: Cli) -> ExitCode {
             let mut files = BTreeMap::<PathBuf, File>::new();
             for (test_path, (properties, subtests)) in recombined_tests_iter {
                 let name = test_path.test_name().to_string();
-                let rel_path = Utf8PathBuf::from(test_path.rel_metadata_path_fx().to_string());
+                let rel_path = Utf8PathBuf::from(test_path.rel_metadata_path_fx(servo).to_string());
                 let path = gecko_checkout.join(&rel_path);
                 let file = files.entry(path).or_insert_with(|| File {
                     properties: file_props_by_file
