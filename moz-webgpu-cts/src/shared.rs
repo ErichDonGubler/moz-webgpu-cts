@@ -338,6 +338,8 @@ const SCOPE_DIR_FX_PRIVATE_STR: &str = "testing/web-platform/mozilla";
 const SCOPE_DIR_FX_PRIVATE_COMPONENTS: &[&str] = &["testing", "web-platform", "mozilla"];
 const SCOPE_DIR_FX_PUBLIC_STR: &str = "testing/web-platform";
 const SCOPE_DIR_FX_PUBLIC_COMPONENTS: &[&str] = &["testing", "web-platform"];
+const SCOPE_DIR_SERVO_PUBLIC_STR: &str = "tests/wpt/webgpu";
+const SCOPE_DIR_SERVO_PUBLIC_COMPONENTS: &[&str] = &["tests", "wpt", "webgpu"];
 
 impl<'a> TestPath<'a> {
     pub fn from_execution_report(
@@ -402,6 +404,8 @@ impl<'a> TestPath<'a> {
             if let Ok(path) = rel_meta_file_path.strip_prefix(SCOPE_DIR_FX_PRIVATE_STR) {
                 (TestScope::FirefoxPrivate, path)
             } else if let Ok(path) = rel_meta_file_path.strip_prefix(SCOPE_DIR_FX_PUBLIC_STR) {
+                (TestScope::Public, path)
+            } else if let Ok(path) = rel_meta_file_path.strip_prefix(SCOPE_DIR_SERVO_PUBLIC_STR) {
                 (TestScope::Public, path)
             } else {
                 return Err(err());
@@ -492,6 +496,7 @@ impl<'a> TestPath<'a> {
         } = self;
 
         let scope_dir = match scope {
+            // TODO: servo
             TestScope::Public => SCOPE_DIR_FX_PUBLIC_COMPONENTS,
             TestScope::FirefoxPrivate => SCOPE_DIR_FX_PRIVATE_COMPONENTS,
         }
