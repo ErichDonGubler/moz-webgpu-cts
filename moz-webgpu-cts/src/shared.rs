@@ -338,6 +338,8 @@ const SCOPE_DIR_FX_PRIVATE_STR: &str = "testing/web-platform/mozilla";
 const SCOPE_DIR_FX_PRIVATE_COMPONENTS: &[&str] = &["testing", "web-platform", "mozilla"];
 const SCOPE_DIR_FX_PUBLIC_STR: &str = "testing/web-platform";
 const SCOPE_DIR_FX_PUBLIC_COMPONENTS: &[&str] = &["testing", "web-platform"];
+const SCOPE_DIR_SERVO_PUBLIC_STR: &str = "tests/wpt/webgpu";
+const SCOPE_DIR_SERVO_PUBLIC_COMPONENTS: &[&str] = &["tests", "wpt", "webgpu"];
 
 impl<'a> TestPath<'a> {
     pub fn from_execution_report(
@@ -349,8 +351,13 @@ impl<'a> TestPath<'a> {
             .map(|stripped| (TestScope::FirefoxPrivate, stripped))
             .or_else(|| {
                 test_url_path
-                    .strip_prefix('/')
+                    .strip_prefix("/_webgpu/")
                     .map(|stripped| (TestScope::Public, stripped))
+                    .or_else(|| {
+                        test_url_path
+                            .strip_prefix('/')
+                            .map(|stripped| (TestScope::Public, stripped))
+                    })
             })
         else {
             return Err(err());
@@ -402,6 +409,8 @@ impl<'a> TestPath<'a> {
             if let Ok(path) = rel_meta_file_path.strip_prefix(SCOPE_DIR_FX_PRIVATE_STR) {
                 (TestScope::FirefoxPrivate, path)
             } else if let Ok(path) = rel_meta_file_path.strip_prefix(SCOPE_DIR_FX_PUBLIC_STR) {
+                (TestScope::Public, path)
+            } else if let Ok(path) = rel_meta_file_path.strip_prefix(SCOPE_DIR_SERVO_PUBLIC_STR) {
                 (TestScope::Public, path)
             } else {
                 return Err(err());
@@ -484,16 +493,23 @@ impl<'a> TestPath<'a> {
         })
     }
 
-    pub(crate) fn rel_metadata_path_fx(&self) -> impl Display + '_ {
+    pub(crate) fn rel_metadata_path_fx(&self, servo: bool) -> impl Display + '_ {
         let Self {
             path,
             variant: _,
             scope,
         } = self;
 
-        let scope_dir = match scope {
-            TestScope::Public => SCOPE_DIR_FX_PUBLIC_COMPONENTS,
-            TestScope::FirefoxPrivate => SCOPE_DIR_FX_PRIVATE_COMPONENTS,
+        let scope_dir = if !servo {
+            match scope {
+                TestScope::Public => SCOPE_DIR_FX_PUBLIC_COMPONENTS,
+                TestScope::FirefoxPrivate => SCOPE_DIR_FX_PRIVATE_COMPONENTS,
+            }
+        } else {
+            match scope {
+                TestScope::Public => SCOPE_DIR_SERVO_PUBLIC_COMPONENTS,
+                TestScope::FirefoxPrivate => todo!(),
+            }
         }
         .iter()
         .chain(&["meta"])
