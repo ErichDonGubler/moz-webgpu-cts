@@ -351,8 +351,13 @@ impl<'a> TestPath<'a> {
             .map(|stripped| (TestScope::FirefoxPrivate, stripped))
             .or_else(|| {
                 test_url_path
-                    .strip_prefix('/')
+                    .strip_prefix("/_webgpu/")
                     .map(|stripped| (TestScope::Public, stripped))
+                    .or_else(|| {
+                        test_url_path
+                            .strip_prefix('/')
+                            .map(|stripped| (TestScope::Public, stripped))
+                    })
             })
         else {
             return Err(err());
