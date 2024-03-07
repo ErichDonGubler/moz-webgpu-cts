@@ -6,6 +6,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
+env_logger = "0.10.0"
 format = "0.2.4"
 indexmap = "2.0.0"
 insta = "1.33.0"

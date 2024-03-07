@@ -8,40 +8,57 @@ use {
     insta::assert_debug_snapshot,
 };
 
+use std::convert::identity;
+
 use chumsky::{
     prelude::Rich,
-    primitive::{any, end, group, just},
+    primitive::{any, custom, end, group, just},
+    recovery::via_parser,
     text::{ascii::keyword, newline},
     IterParser, Parser,
 };
 
-use crate::metadata::{indent, ParseError};
+use crate::metadata::{indent, rest_of_line, ParseError};
 
 pub use self::expr::{Expr, Literal, Value};
 
+/// TODO: document recovery and errors
 fn conditional_rule<'a, C, V, Pc, Pv>(
     indentation: u8,
     condition_parser: Pc,
     value_parser: Pv,
-) -> impl Parser<'a, &'a str, (C, V), ParseError<'a>>
+) -> impl Parser<'a, &'a str, Option<(C, V)>, ParseError<'a>>
 where
     Pc: Parser<'a, &'a str, C, ParseError<'a>>,
     Pv: Parser<'a, &'a str, V, ParseError<'a>>,
 {
-    group((indent(indentation), keyword("if"), just(' ')))
-        .ignore_then(
-            condition_parser.nested_in(
-                any()
-                    .and_is(newline().or(just(':').to(())).not())
-                    .repeated()
-                    .at_least(1)
-                    .to_slice(),
-            ),
-        )
-        .then_ignore(group((just(':').to(()), just(' ').or_not().to(()))))
-        .then(value_parser.nested_in(unstructured_value()))
-        .then_ignore(newline().or(end()))
-        .labelled("conditional value rule")
+    group((
+        indent(indentation),
+        keyword("if").labelled("`if` keyword"),
+        just(' ').labelled("space"),
+    ))
+    .ignore_then(
+        condition_parser
+            .then_ignore(group((just(':').to(()), just(' ').or_not().to(()))))
+            .then(value_parser)
+            .then_ignore(newline().or(end()))
+            .map(Some)
+            .recover_with(via_parser(
+                custom(|input| {
+                    if input.peek().is_none() {
+                        Err(chumsky::error::Error::<'_, &str>::expected_found(
+                            None,
+                            None,
+                            input.span_since(input.offset()),
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .ignore_then(rest_of_line().then(newline().or(end())).map(|_| None)),
+            )),
+    )
+    .labelled("conditional value rule")
 }
 
 #[test]
@@ -57,22 +74,24 @@ fn test_conditional_rule() {
     assert_debug_snapshot!(conditional_rule(0).parse("if os == \"sux\": woot"), @r###"
     ParseResult {
         output: Some(
-            (
-                Eq(
-                    Value(
-                        Variable(
-                            "os",
+            Some(
+                (
+                    Eq(
+                        Value(
+                            Variable(
+                                "os",
+                            ),
                         ),
-                    ),
-                    Value(
-                        Literal(
-                            String(
-                                "sux",
+                        Value(
+                            Literal(
+                                String(
+                                    "sux",
+                                ),
                             ),
                         ),
                     ),
+                    "woot",
                 ),
-                "woot",
             ),
         ),
         errs: [],
@@ -82,22 +101,24 @@ fn test_conditional_rule() {
     assert_debug_snapshot!(conditional_rule(1).parse("  if os == \"sux\": woot"), @r###"
     ParseResult {
         output: Some(
-            (
-                Eq(
-                    Value(
-                        Variable(
-                            "os",
+            Some(
+                (
+                    Eq(
+                        Value(
+                            Variable(
+                                "os",
+                            ),
                         ),
-                    ),
-                    Value(
-                        Literal(
-                            String(
-                                "sux",
+                        Value(
+                            Literal(
+                                String(
+                                    "sux",
+                                ),
                             ),
                         ),
                     ),
+                    "woot",
                 ),
-                "woot",
             ),
         ),
         errs: [],
@@ -113,22 +134,24 @@ fn test_conditional_rule() {
     @r###"
     ParseResult {
         output: Some(
-            (
-                Eq(
-                    Value(
-                        Variable(
-                            "os",
+            Some(
+                (
+                    Eq(
+                        Value(
+                            Variable(
+                                "os",
+                            ),
                         ),
-                    ),
-                    Value(
-                        Literal(
-                            String(
-                                "sux",
+                        Value(
+                            Literal(
+                                String(
+                                    "sux",
+                                ),
                             ),
                         ),
                     ),
+                    "woot",
                 ),
-                "woot",
             ),
         ),
         errs: [],
@@ -142,13 +165,15 @@ fn test_conditional_rule() {
     @r###"
     ParseResult {
         output: Some(
-            (
-                Value(
-                    Variable(
-                        "debug",
+            Some(
+                (
+                    Value(
+                        Variable(
+                            "debug",
+                        ),
                     ),
+                    "ohnoes",
                 ),
-                "ohnoes",
             ),
         ),
         errs: [],
@@ -159,12 +184,16 @@ fn test_conditional_rule() {
 fn conditional_fallback<'a, V, Pv>(
     indentation: u8,
     value_parser: Pv,
-) -> impl Parser<'a, &'a str, V, ParseError<'a>>
+) -> impl Parser<'a, &'a str, Option<V>, ParseError<'a>>
 where
     Pv: Parser<'a, &'a str, V, ParseError<'a>>,
 {
     indent(indentation)
-        .ignore_then(value_parser.nested_in(unstructured_value()))
+        .ignore_then(
+            value_parser
+                .map(Some)
+                .recover_with(via_parser(unstructured_value().map(|_| None))),
+        )
         .then_ignore(newline().or(end()))
         .labelled("conditional value fallback")
 }
@@ -176,7 +205,9 @@ fn test_conditional_fallback() {
     assert_debug_snapshot!(conditional_fallback(0).parse("[PASS, FAIL]"), @r###"
     ParseResult {
         output: Some(
-            "[PASS, FAIL]",
+            Some(
+                "[PASS, FAIL]",
+            ),
         ),
         errs: [],
     }
@@ -184,7 +215,9 @@ fn test_conditional_fallback() {
     assert_debug_snapshot!(conditional_fallback(0).parse(r#""okgo""#), @r###"
     ParseResult {
         output: Some(
-            "\"okgo\"",
+            Some(
+                "\"okgo\"",
+            ),
         ),
         errs: [],
     }
@@ -216,7 +249,9 @@ fn test_conditional_fallback() {
     assert_debug_snapshot!(conditional_fallback(1).parse("  @False"), @r###"
     ParseResult {
         output: Some(
-            "@False",
+            Some(
+                "@False",
+            ),
         ),
         errs: [],
     }
@@ -248,7 +283,9 @@ fn test_conditional_fallback() {
     assert_debug_snapshot!(conditional_fallback(3).parse("      @True"), @r###"
     ParseResult {
         output: Some(
-            "@True",
+            Some(
+                "@True",
+            ),
         ),
         errs: [],
     }
@@ -286,7 +323,7 @@ impl<C, V> ConditionalValue<C, V> {
         indentation: u8,
         condition_parser: Pc,
         value_parser: Pv,
-    ) -> impl Parser<'a, &'a str, ConditionalValue<C, V>, ParseError<'a>>
+    ) -> impl Parser<'a, &'a str, Option<ConditionalValue<C, V>>, ParseError<'a>>
     where
         Pc: Parser<'a, &'a str, C, ParseError<'a>>,
         Pv: Clone + Parser<'a, &'a str, V, ParseError<'a>>,
@@ -306,9 +343,17 @@ impl<C, V> ConditionalValue<C, V> {
                         ),
                     ));
                 }
-                ConditionalValue {
-                    conditions,
-                    fallback,
+                let conditions = conditions
+                    .into_iter()
+                    .filter_map(identity)
+                    .collect::<Vec<_>>();
+                if conditions.is_empty() && fallback.is_none() {
+                    None
+                } else {
+                    Some(ConditionalValue {
+                        conditions,
+                        fallback: fallback.flatten(),
+                    })
                 }
             })
             .labelled("conditional value")
@@ -352,28 +397,30 @@ fn test_conditional_value() {
         @r###"
     ParseResult {
         output: Some(
-            ConditionalValue {
-                conditions: [
-                    (
-                        Eq(
-                            Value(
-                                Variable(
-                                    "os",
+            Some(
+                ConditionalValue {
+                    conditions: [
+                        (
+                            Eq(
+                                Value(
+                                    Variable(
+                                        "os",
+                                    ),
                                 ),
-                            ),
-                            Value(
-                                Literal(
-                                    String(
-                                        "awesome",
+                                Value(
+                                    Literal(
+                                        String(
+                                            "awesome",
+                                        ),
                                     ),
                                 ),
                             ),
+                            "great",
                         ),
-                        "great",
-                    ),
-                ],
-                fallback: None,
-            },
+                    ],
+                    fallback: None,
+                },
+            ),
         ),
         errs: [],
     }
@@ -391,47 +438,49 @@ TIMEOUT
         @r###"
     ParseResult {
         output: Some(
-            ConditionalValue {
-                conditions: [
-                    (
-                        Eq(
-                            Value(
-                                Variable(
-                                    "os",
+            Some(
+                ConditionalValue {
+                    conditions: [
+                        (
+                            Eq(
+                                Value(
+                                    Variable(
+                                        "os",
+                                    ),
                                 ),
-                            ),
-                            Value(
-                                Literal(
-                                    String(
-                                        "mac",
+                                Value(
+                                    Literal(
+                                        String(
+                                            "mac",
+                                        ),
                                     ),
                                 ),
                             ),
+                            "PASS",
                         ),
-                        "PASS",
-                    ),
-                    (
-                        Eq(
-                            Value(
-                                Variable(
-                                    "os",
+                        (
+                            Eq(
+                                Value(
+                                    Variable(
+                                        "os",
+                                    ),
                                 ),
-                            ),
-                            Value(
-                                Literal(
-                                    String(
-                                        "linux",
+                                Value(
+                                    Literal(
+                                        String(
+                                            "linux",
+                                        ),
                                     ),
                                 ),
                             ),
+                            "FAIL",
                         ),
-                        "FAIL",
+                    ],
+                    fallback: Some(
+                        "TIMEOUT",
                     ),
-                ],
-                fallback: Some(
-                    "TIMEOUT",
-                ),
-            },
+                },
+            ),
         ),
         errs: [],
     }
@@ -445,28 +494,30 @@ if os == "mac": PASS
         @r###"
     ParseResult {
         output: Some(
-            ConditionalValue {
-                conditions: [
-                    (
-                        Eq(
-                            Value(
-                                Variable(
-                                    "os",
+            Some(
+                ConditionalValue {
+                    conditions: [
+                        (
+                            Eq(
+                                Value(
+                                    Variable(
+                                        "os",
+                                    ),
                                 ),
-                            ),
-                            Value(
-                                Literal(
-                                    String(
-                                        "mac",
+                                Value(
+                                    Literal(
+                                        String(
+                                            "mac",
+                                        ),
                                     ),
                                 ),
                             ),
+                            "PASS",
                         ),
-                        "PASS",
-                    ),
-                ],
-                fallback: None,
-            },
+                    ],
+                    fallback: None,
+                },
+            ),
         ),
         errs: [],
     }
@@ -481,45 +532,47 @@ if os == "linux": FAIL
         @r###"
     ParseResult {
         output: Some(
-            ConditionalValue {
-                conditions: [
-                    (
-                        Eq(
-                            Value(
-                                Variable(
-                                    "os",
+            Some(
+                ConditionalValue {
+                    conditions: [
+                        (
+                            Eq(
+                                Value(
+                                    Variable(
+                                        "os",
+                                    ),
                                 ),
-                            ),
-                            Value(
-                                Literal(
-                                    String(
-                                        "mac",
+                                Value(
+                                    Literal(
+                                        String(
+                                            "mac",
+                                        ),
                                     ),
                                 ),
                             ),
+                            "PASS",
                         ),
-                        "PASS",
-                    ),
-                    (
-                        Eq(
-                            Value(
-                                Variable(
-                                    "os",
+                        (
+                            Eq(
+                                Value(
+                                    Variable(
+                                        "os",
+                                    ),
                                 ),
-                            ),
-                            Value(
-                                Literal(
-                                    String(
-                                        "linux",
+                                Value(
+                                    Literal(
+                                        String(
+                                            "linux",
+                                        ),
                                     ),
                                 ),
                             ),
+                            "FAIL",
                         ),
-                        "FAIL",
-                    ),
-                ],
-                fallback: None,
-            },
+                    ],
+                    fallback: None,
+                },
+            ),
         ),
         errs: [],
     }
@@ -534,45 +587,47 @@ if os == "linux": FAIL
         @r###"
     ParseResult {
         output: Some(
-            ConditionalValue {
-                conditions: [
-                    (
-                        Eq(
-                            Value(
-                                Variable(
-                                    "os",
+            Some(
+                ConditionalValue {
+                    conditions: [
+                        (
+                            Eq(
+                                Value(
+                                    Variable(
+                                        "os",
+                                    ),
                                 ),
-                            ),
-                            Value(
-                                Literal(
-                                    String(
-                                        "mac",
+                                Value(
+                                    Literal(
+                                        String(
+                                            "mac",
+                                        ),
                                     ),
                                 ),
                             ),
+                            "PASS",
                         ),
-                        "PASS",
-                    ),
-                    (
-                        Eq(
-                            Value(
-                                Variable(
-                                    "os",
+                        (
+                            Eq(
+                                Value(
+                                    Variable(
+                                        "os",
+                                    ),
                                 ),
-                            ),
-                            Value(
-                                Literal(
-                                    String(
-                                        "linux",
+                                Value(
+                                    Literal(
+                                        String(
+                                            "linux",
+                                        ),
                                     ),
                                 ),
                             ),
+                            "FAIL",
                         ),
-                        "FAIL",
-                    ),
-                ],
-                fallback: None,
-            },
+                    ],
+                    fallback: None,
+                },
+            ),
         ),
         errs: [],
     }
@@ -588,47 +643,49 @@ if os == "linux": FAIL
         @r###"
     ParseResult {
         output: Some(
-            ConditionalValue {
-                conditions: [
-                    (
-                        Eq(
-                            Value(
-                                Variable(
-                                    "os",
+            Some(
+                ConditionalValue {
+                    conditions: [
+                        (
+                            Eq(
+                                Value(
+                                    Variable(
+                                        "os",
+                                    ),
                                 ),
-                            ),
-                            Value(
-                                Literal(
-                                    String(
-                                        "mac",
+                                Value(
+                                    Literal(
+                                        String(
+                                            "mac",
+                                        ),
                                     ),
                                 ),
                             ),
+                            "PASS",
                         ),
-                        "PASS",
-                    ),
-                    (
-                        Eq(
-                            Value(
-                                Variable(
-                                    "os",
+                        (
+                            Eq(
+                                Value(
+                                    Variable(
+                                        "os",
+                                    ),
                                 ),
-                            ),
-                            Value(
-                                Literal(
-                                    String(
-                                        "linux",
+                                Value(
+                                    Literal(
+                                        String(
+                                            "linux",
+                                        ),
                                     ),
                                 ),
                             ),
+                            "FAIL",
                         ),
-                        "FAIL",
+                    ],
+                    fallback: Some(
+                        "TIMEOUT",
                     ),
-                ],
-                fallback: Some(
-                    "TIMEOUT",
-                ),
-            },
+                },
+            ),
         ),
         errs: [],
     }
@@ -644,47 +701,49 @@ if os == "linux": FAIL
         @r###"
     ParseResult {
         output: Some(
-            ConditionalValue {
-                conditions: [
-                    (
-                        Eq(
-                            Value(
-                                Variable(
-                                    "os",
+            Some(
+                ConditionalValue {
+                    conditions: [
+                        (
+                            Eq(
+                                Value(
+                                    Variable(
+                                        "os",
+                                    ),
                                 ),
-                            ),
-                            Value(
-                                Literal(
-                                    String(
-                                        "mac",
+                                Value(
+                                    Literal(
+                                        String(
+                                            "mac",
+                                        ),
                                     ),
                                 ),
                             ),
+                            "[dom.webgpu.enabled:true, dom.webgpu.workers.enabled:true, dom.webgpu.testing.assert-hardware-adapter:true]",
                         ),
-                        "[dom.webgpu.enabled:true, dom.webgpu.workers.enabled:true, dom.webgpu.testing.assert-hardware-adapter:true]",
-                    ),
-                    (
-                        Eq(
-                            Value(
-                                Variable(
-                                    "os",
+                        (
+                            Eq(
+                                Value(
+                                    Variable(
+                                        "os",
+                                    ),
                                 ),
-                            ),
-                            Value(
-                                Literal(
-                                    String(
-                                        "windows",
+                                Value(
+                                    Literal(
+                                        String(
+                                            "windows",
+                                        ),
                                     ),
                                 ),
                             ),
+                            "[dom.webgpu.enabled:true, dom.webgpu.workers.enabled:true, dom.webgpu.testing.assert-hardware-adapter:true]",
                         ),
-                        "[dom.webgpu.enabled:true, dom.webgpu.workers.enabled:true, dom.webgpu.testing.assert-hardware-adapter:true]",
+                    ],
+                    fallback: Some(
+                        "[dom.webgpu.enabled:true, dom.webgpu.workers.enabled:true]",
                     ),
-                ],
-                fallback: Some(
-                    "[dom.webgpu.enabled:true, dom.webgpu.workers.enabled:true]",
-                ),
-            },
+                },
+            ),
         ),
         errs: [],
     }

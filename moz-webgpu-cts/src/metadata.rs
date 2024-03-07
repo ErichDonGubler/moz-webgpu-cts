@@ -68,12 +68,12 @@ impl<'a> Properties<'a> for FileProps {
 
     fn property_parser(
         helper: &mut PropertiesParseHelper<'a>,
-    ) -> Boxed<'a, 'a, &'a str, Self::ParsedProperty, ParseError<'a>> {
+    ) -> Boxed<'a, 'a, &'a str, Option<Self::ParsedProperty>, ParseError<'a>> {
         let conditional_term = Expr::parser(Value::parser().map(|expr| expr.to_static()));
 
         let prefs = helper
             .parser(
-                just("prefs").to(()),
+                just("prefs").to(()).labelled("`prefs` property"),
                 conditional_term.clone(),
                 group((
                     ascii::ident()
@@ -102,20 +102,23 @@ impl<'a> Properties<'a> for FileProps {
                     just(']').padded_by(inline_whitespace()),
                 ),
             )
-            .map(|((), prefs)| FileProp::Prefs(prefs));
+            .map(|opt| opt.map(|((), prefs)| FileProp::Prefs(prefs)));
 
         let tags = helper
             .parser(
-                keyword("tags").to(()),
+                keyword("tags").to(()).labelled("`tags` property`"),
                 conditional_term.clone(),
                 ascii::ident()
+                    .labelled("tag name")
                     .map(|i: &str| i.to_owned())
                     .separated_by(just(',').padded_by(inline_whitespace()))
                     .collect()
+                    .labelled("tag list")
                     .delimited_by(
                         just('[').padded_by(inline_whitespace()),
                         just(']').padded_by(inline_whitespace()),
                     )
+                    .labelled("tag list")
                     .validate(|idents: Vec<_>, e, emitter| {
                         if idents.is_empty() {
                             emitter.emit(Rich::custom(e.span(), "no tags specified"));
@@ -123,11 +126,11 @@ impl<'a> Properties<'a> for FileProps {
                         idents
                     }),
             )
-            .map(|((), tags)| FileProp::Tags(tags));
+            .map(|opt| opt.map(|((), tags)| FileProp::Tags(tags)));
 
         let disabled = helper
             .parser(
-                keyword("disabled").to(()),
+                keyword("disabled").to(()).labelled("`disabled` property"),
                 conditional_term,
                 any()
                     .and_is(newline().or(end()).not())
@@ -136,10 +139,11 @@ impl<'a> Properties<'a> for FileProps {
                     .to_slice()
                     .map(|s: &str| s.to_owned()),
             )
-            .map(|((), is_disabled)| FileProp::Disabled(is_disabled));
+            .map(|opt| opt.map(|((), is_disabled)| FileProp::Disabled(is_disabled)));
 
-        choice((prefs, tags, disabled))
-            .map_with(|prop, e| (e.span(), prop))
+        helper
+            .complete(choice((prefs, tags, disabled)))
+            .map_with(|prop, e| prop.map(|prop| (e.span(), prop)))
             .boxed()
     }
 
@@ -183,11 +187,13 @@ fn file_props() {
         @r###"
     ParseResult {
         output: Some(
-            (
-                0..9,
-                Prefs(
-                    Unconditional(
-                        [],
+            Some(
+                (
+                    0..9,
+                    Prefs(
+                        Unconditional(
+                            [],
+                        ),
                     ),
                 ),
             ),
@@ -202,16 +208,18 @@ fn file_props() {
         @r###"
     ParseResult {
         output: Some(
-            (
-                0..32,
-                Prefs(
-                    Unconditional(
-                        [
-                            (
-                                "dom.webgpu.enabled",
-                                "true",
-                            ),
-                        ],
+            Some(
+                (
+                    0..32,
+                    Prefs(
+                        Unconditional(
+                            [
+                                (
+                                    "dom.webgpu.enabled",
+                                    "true",
+                                ),
+                            ],
+                        ),
                     ),
                 ),
             ),
@@ -225,7 +233,9 @@ fn file_props() {
         parser.parse("prefs: [dom.webgpu.enabled:[notvalidyet]]"),
         @r###"
     ParseResult {
-        output: None,
+        output: Some(
+            None,
+        ),
         errs: [
             found ''d'' at 8..9 expected "property value",
         ],
@@ -238,24 +248,26 @@ fn file_props() {
         @r###"
     ParseResult {
         output: Some(
-            (
-                0..114,
-                Prefs(
-                    Unconditional(
-                        [
-                            (
-                                "dom.webgpu.enabled",
-                                "true",
-                            ),
-                            (
-                                "dom.webgpu.workers.enabled",
-                                "true",
-                            ),
-                            (
-                                "dom.webgpu.testing.assert-hardware-adapter",
-                                "true",
-                            ),
-                        ],
+            Some(
+                (
+                    0..114,
+                    Prefs(
+                        Unconditional(
+                            [
+                                (
+                                    "dom.webgpu.enabled",
+                                    "true",
+                                ),
+                                (
+                                    "dom.webgpu.workers.enabled",
+                                    "true",
+                                ),
+                                (
+                                    "dom.webgpu.testing.assert-hardware-adapter",
+                                    "true",
+                                ),
+                            ],
+                        ),
                     ),
                 ),
             ),
@@ -270,11 +282,13 @@ fn file_props() {
         @r###"
     ParseResult {
         output: Some(
-            (
-                0..8,
-                Tags(
-                    Unconditional(
-                        [],
+            Some(
+                (
+                    0..8,
+                    Tags(
+                        Unconditional(
+                            [],
+                        ),
                     ),
                 ),
             ),
@@ -291,13 +305,15 @@ fn file_props() {
         @r###"
     ParseResult {
         output: Some(
-            (
-                0..14,
-                Tags(
-                    Unconditional(
-                        [
-                            "webgpu",
-                        ],
+            Some(
+                (
+                    0..14,
+                    Tags(
+                        Unconditional(
+                            [
+                                "webgpu",
+                            ],
+                        ),
                     ),
                 ),
             ),
@@ -311,7 +327,9 @@ fn file_props() {
         parser.parse("tags: [INVAL!D]"),
         @r###"
     ParseResult {
-        output: None,
+        output: Some(
+            None,
+        ),
         errs: [
             found ''!'' at 12..13 expected '']'',
         ],
@@ -319,7 +337,7 @@ fn file_props() {
     "###
     );
 
-    let parser = parser.padded();
+    let parser = newline().ignore_then(parser.repeated().collect::<Vec<_>>());
 
     insta::assert_debug_snapshot!(
         parser.parse(
@@ -335,10 +353,130 @@ disabled:
     ),
     @r###"
     ParseResult {
-        output: None,
-        errs: [
-            found ''\n'' at 324..325 expected end of input,
-        ],
+        output: Some(
+            [
+                Some(
+                    (
+                        1..325,
+                        Prefs(
+                            Conditional(
+                                ConditionalValue {
+                                    conditions: [
+                                        (
+                                            Eq(
+                                                Value(
+                                                    Variable(
+                                                        "os",
+                                                    ),
+                                                ),
+                                                Value(
+                                                    Literal(
+                                                        String(
+                                                            "mac",
+                                                        ),
+                                                    ),
+                                                ),
+                                            ),
+                                            [
+                                                (
+                                                    "dom.webgpu.enabled",
+                                                    "true",
+                                                ),
+                                                (
+                                                    "dom.webgpu.workers.enabled",
+                                                    "true",
+                                                ),
+                                                (
+                                                    "dom.webgpu.testing.assert-hardware-adapter",
+                                                    "true",
+                                                ),
+                                            ],
+                                        ),
+                                        (
+                                            Eq(
+                                                Value(
+                                                    Variable(
+                                                        "os",
+                                                    ),
+                                                ),
+                                                Value(
+                                                    Literal(
+                                                        String(
+                                                            "windows",
+                                                        ),
+                                                    ),
+                                                ),
+                                            ),
+                                            [
+                                                (
+                                                    "dom.webgpu.enabled",
+                                                    "true",
+                                                ),
+                                                (
+                                                    "dom.webgpu.workers.enabled",
+                                                    "true",
+                                                ),
+                                                (
+                                                    "dom.webgpu.testing.assert-hardware-adapter",
+                                                    "true",
+                                                ),
+                                            ],
+                                        ),
+                                    ],
+                                    fallback: Some(
+                                        [
+                                            (
+                                                "dom.webgpu.enabled",
+                                                "true",
+                                            ),
+                                            (
+                                                "dom.webgpu.workers.enabled",
+                                                "true",
+                                            ),
+                                        ],
+                                    ),
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+                Some(
+                    (
+                        325..340,
+                        Tags(
+                            Unconditional(
+                                [
+                                    "webgpu",
+                                ],
+                            ),
+                        ),
+                    ),
+                ),
+                Some(
+                    (
+                        340..422,
+                        Disabled(
+                            Conditional(
+                                ConditionalValue {
+                                    conditions: [
+                                        (
+                                            Value(
+                                                Variable(
+                                                    "release_or_beta",
+                                                ),
+                                            ),
+                                            "https://mozilla-hub.atlassian.net/browse/FFXP-223",
+                                        ),
+                                    ],
+                                    fallback: None,
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            ],
+        ),
+        errs: [],
     }
     "###
         );
@@ -480,7 +618,7 @@ pub struct Test {
 
 #[cfg(test)]
 impl Test {
-    fn parser<'a>() -> impl Parser<'a, &'a str, (SectionHeader, Test), ParseError<'a>> {
+    fn parser<'a>() -> impl Parser<'a, &'a str, (Option<SectionHeader>, Test), ParseError<'a>> {
         metadata::test_parser()
     }
 }
@@ -804,7 +942,7 @@ where
     fn property_parser<'a, P>(
         helper: &mut PropertiesParseHelper<'a>,
         outcome_parser: P,
-    ) -> impl Parser<'a, &'a str, TestProp<Out>, ParseError<'a>>
+    ) -> impl Parser<'a, &'a str, Option<TestProp<Out>>, ParseError<'a>>
     where
         Out: Eq + Hash + PartialEq,
         P: Clone + Parser<'a, &'a str, Out, ParseError<'a>>,
@@ -920,41 +1058,43 @@ where
             };
             acc
         });
-        choice((
-            helper
-                .parser(
-                    just("expected").to(()),
-                    conditional_term.clone(),
-                    choice((
-                        outcome_parser.clone().map(Expectation::permanent),
-                        outcome_parser
-                            .padded_by(inline_whitespace())
-                            .separated_by(just(','))
-                            .collect::<Vec<_>>()
-                            .map(|vec| vec.into_iter().collect())
-                            .delimited_by(just('['), just(']'))
-                            .try_map(|outcomes, span| {
-                                Expectation::intermittent(outcomes).ok_or_else(|| {
-                                    Rich::custom(
-                                        span,
-                                        "intermittent outcomes must have at least 2 elements",
-                                    )
-                                })
-                            }),
-                    ))
-                    .padded_by(inline_whitespace()),
-                )
-                .map_with(|((), val), e| TestProp {
+        let expected = helper
+            .parser(
+                just("expected").to(()),
+                conditional_term.clone(),
+                choice((
+                    outcome_parser.clone().map(Expectation::permanent),
+                    outcome_parser
+                        .padded_by(inline_whitespace())
+                        .separated_by(just(','))
+                        .collect::<Vec<_>>()
+                        .map(|vec| vec.into_iter().collect())
+                        .delimited_by(just('['), just(']'))
+                        .try_map(|outcomes, span| {
+                            Expectation::intermittent(outcomes).ok_or_else(|| {
+                                Rich::custom(
+                                    span,
+                                    "intermittent outcomes must have at least 2 elements",
+                                )
+                            })
+                        }),
+                ))
+                .padded_by(inline_whitespace()),
+            )
+            .map_with(|opt, e| {
+                opt.map(|((), val)| TestProp {
                     span: e.span(),
                     kind: TestPropKind::Expected(val),
-                }),
-            helper
-                .parser(
-                    just("disabled").to(()),
-                    conditional_term,
-                    just("true").to(()),
-                )
-                .validate(|((), val), e, emitter| {
+                })
+            });
+        let disabled = helper
+            .parser(
+                just("disabled").to(()),
+                conditional_term,
+                just("true").to(()),
+            )
+            .validate(|opt, e, emitter| {
+                opt.map(|((), val)| {
                     match val {
                         PropertyValue::Unconditional(()) => (),
                         PropertyValue::Conditional { .. } => {
@@ -968,8 +1108,9 @@ where
                         span: e.span(),
                         kind: TestPropKind::Disabled,
                     }
-                }),
-        ))
+                })
+            });
+        helper.complete(choice((expected, disabled)))
     }
 }
 
@@ -1009,7 +1150,7 @@ impl<'a> Properties<'a> for TestProps<TestOutcome> {
     type ParsedProperty = TestProp<TestOutcome>;
     fn property_parser(
         helper: &mut PropertiesParseHelper<'a>,
-    ) -> Boxed<'a, 'a, &'a str, Self::ParsedProperty, ParseError<'a>> {
+    ) -> Boxed<'a, 'a, &'a str, Option<Self::ParsedProperty>, ParseError<'a>> {
         TestProp::property_parser(
             helper,
             choice((
@@ -1064,7 +1205,7 @@ impl<'a> Properties<'a> for TestProps<SubtestOutcome> {
     type ParsedProperty = TestProp<SubtestOutcome>;
     fn property_parser(
         helper: &mut PropertiesParseHelper<'a>,
-    ) -> Boxed<'a, 'a, &'a str, Self::ParsedProperty, ParseError<'a>> {
+    ) -> Boxed<'a, 'a, &'a str, Option<Self::ParsedProperty>, ParseError<'a>> {
         TestProp::property_parser(
             helper,
             choice((
@@ -1227,7 +1368,20 @@ r#"
         ),
         @r###"
     ParseResult {
-        output: None,
+        output: Some(
+            (
+                Some(
+                    "asdf",
+                ),
+                Test {
+                    properties: TestProps {
+                        is_disabled: false,
+                        expectations: None,
+                    },
+                    subtests: {},
+                },
+            ),
+        ),
         errs: [
             found end of input at 108..112 expected something else,
         ],
@@ -1247,7 +1401,9 @@ r#"
     ParseResult {
         output: Some(
             (
-                "asdf",
+                Some(
+                    "asdf",
+                ),
                 Test {
                     properties: TestProps {
                         is_disabled: false,
@@ -1293,7 +1449,9 @@ r#"
     ParseResult {
         output: Some(
             (
-                "asdf",
+                Some(
+                    "asdf",
+                ),
                 Test {
                     properties: TestProps {
                         is_disabled: false,
@@ -1348,7 +1506,9 @@ r#"
     ParseResult {
         output: Some(
             (
-                "asdf",
+                Some(
+                    "asdf",
+                ),
                 Test {
                     properties: TestProps {
                         is_disabled: false,
@@ -1396,7 +1556,9 @@ r#"
     ParseResult {
         output: Some(
             (
-                "asdf",
+                Some(
+                    "asdf",
+                ),
                 Test {
                     properties: TestProps {
                         is_disabled: false,
@@ -1452,7 +1614,9 @@ r#"
     ParseResult {
         output: Some(
             (
-                "cts.https.html?q=webgpu:api,validation,buffer,destroy:twice:*",
+                Some(
+                    "cts.https.html?q=webgpu:api,validation,buffer,destroy:twice:*",
+                ),
                 Test {
                     properties: TestProps {
                         is_disabled: false,
@@ -1485,4 +1649,210 @@ r#"
     }
     "###
     );
+}
+
+#[test]
+fn outta_left_field() {
+    let file_parser = newline().then(File::parser());
+    insta::assert_debug_snapshot!(file_parser.parse(
+        r#"
+[good]
+  [still good]
+    [LEFT FIELD FTW]
+"#,
+    ), @r###"
+    ParseResult {
+        output: Some(
+            (
+                (),
+                File {
+                    properties: FileProps {
+                        is_disabled: None,
+                        prefs: None,
+                        tags: None,
+                    },
+                    tests: {
+                        "good": Test {
+                            properties: TestProps {
+                                is_disabled: false,
+                                expectations: None,
+                            },
+                            subtests: {
+                                "still good": Subtest {
+                                    properties: TestProps {
+                                        is_disabled: false,
+                                        expectations: None,
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            ),
+        ),
+        errs: [
+            found ''['' at 27..28 expected ''e'', or ''d'',
+        ],
+    }
+    "###);
+}
+
+#[test]
+fn recover_gud_plz() {
+    use whippit::metadata::subtest_parser;
+
+    env_logger::init();
+
+    let file_parser = newline().ignore_then(
+        subtest_parser::<crate::metadata::Subtest>()
+            .repeated()
+            .collect::<Vec<_>>(),
+    );
+    insta::assert_debug_snapshot!(file_parser.parse(
+        r#"
+  [:powerPreference="_undef_";forceFallbackAdapter="_undef_"]
+    blarg: flarg
+    expected:
+      if os == "win" and debug: [PASS, FAIL]
+      FAIL
+
+  [:powerPreference="_undef_";forceFallbackAdapter=false]
+    ofrick: lezduit
+    expected:
+      if os == "win" and debug: [PASS, FAIL]
+"#,
+    ), @r###"
+    ParseResult {
+        output: Some(
+            [
+                (
+                    Some(
+                        ":powerPreference=\"_undef_\";forceFallbackAdapter=\"_undef_\"",
+                    ),
+                    Subtest {
+                        properties: TestProps {
+                            is_disabled: false,
+                            expectations: Some(
+                                NormalizedExpectationPropertyValue(
+                                    Expanded(
+                                        {
+                                            Windows: Expanded(
+                                                {
+                                                    Debug: [
+                                                        Pass,
+                                                        Fail,
+                                                    ],
+                                                    Optimized: [
+                                                        Fail,
+                                                    ],
+                                                },
+                                            ),
+                                            Linux: Collapsed(
+                                                [
+                                                    Fail,
+                                                ],
+                                            ),
+                                            MacOs: Collapsed(
+                                                [
+                                                    Fail,
+                                                ],
+                                            ),
+                                        },
+                                    ),
+                                ),
+                            ),
+                        },
+                    },
+                ),
+                (
+                    Some(
+                        ":powerPreference=\"_undef_\";forceFallbackAdapter=false",
+                    ),
+                    Subtest {
+                        properties: TestProps {
+                            is_disabled: false,
+                            expectations: Some(
+                                NormalizedExpectationPropertyValue(
+                                    Expanded(
+                                        {
+                                            Windows: Expanded(
+                                                {
+                                                    Debug: [
+                                                        Pass,
+                                                        Fail,
+                                                    ],
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ),
+                            ),
+                        },
+                    },
+                ),
+            ],
+        ),
+        errs: [
+            found ''b'' at 67..68 expected ''e'', or ''d'',
+            found ''o'' at 213..214 expected ''e'', or ''d'',
+        ],
+    }
+    "###);
+}
+
+#[test]
+fn plzwork() {
+    let file_parser = newline().then(File::parser());
+    insta::assert_debug_snapshot!(file_parser.parse(
+        r#"
+[thisfine]
+  [disgud]
+    expected: FAIL
+    ofrick: lol
+"#,
+    ), @r###"
+    ParseResult {
+        output: Some(
+            (
+                (),
+                File {
+                    properties: FileProps {
+                        is_disabled: None,
+                        prefs: None,
+                        tags: None,
+                    },
+                    tests: {
+                        "thisfine": Test {
+                            properties: TestProps {
+                                is_disabled: false,
+                                expectations: None,
+                            },
+                            subtests: {
+                                "disgud": Subtest {
+                                    properties: TestProps {
+                                        is_disabled: false,
+                                        expectations: Some(
+                                            NormalizedExpectationPropertyValue(
+                                                Collapsed(
+                                                    Collapsed(
+                                                        [
+                                                            Fail,
+                                                        ],
+                                                    ),
+                                                ),
+                                            ),
+                                        ),
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            ),
+        ),
+        errs: [
+            found ''o'' at 46..47 expected ''e'', or ''d'',
+        ],
+    }
+    "###);
 }

@@ -15,6 +15,8 @@ unstructured-properties = ["dep:indexmap"]
 chumsky = { version = "1.0.0-alpha.6", features = ["label", "pratt"] }
 format = { workspace = true }
 indexmap = { workspace = true, optional = true }
+log = { workspace = true }
 
 [dev-dependencies]
+env_logger = { workspace = true }
 insta = { workspace = true }

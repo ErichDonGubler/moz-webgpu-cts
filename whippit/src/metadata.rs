@@ -10,7 +10,9 @@
 
 #[cfg(test)]
 use {
-    crate::metadata::properties::unstructured::{UnstructuredFile, UnstructuredSubtest},
+    crate::metadata::properties::unstructured::{
+        UnstructuredFile, UnstructuredSubtest, UnstructuredTest,
+    },
     insta::assert_debug_snapshot,
 };
 
@@ -21,8 +23,9 @@ use chumsky::{
     input::Emitter,
     prelude::Rich,
     primitive::{any, choice, custom, end, group, just},
+    recovery::via_parser,
     span::SimpleSpan,
-    text::newline,
+    text::{inline_whitespace, newline},
     IterParser, Parser,
 };
 use format::lazy_format;
@@ -68,26 +71,39 @@ where
         Property(P),
         Test(T),
     }
-    filler()
-        .ignore_then(choice((
-            test_parser().map(Item::Test),
-            F::Properties::property_parser(&mut PropertiesParseHelper::new(0)).map(Item::Property),
-        )))
-        .then_ignore(filler())
-        .map_with(|test, e| (e.span(), test))
-        .repeated()
-        .collect::<Vec<_>>()
-        .validate(|parsed_tests, _e, emitter| {
-            let mut properties = F::Properties::default();
-            let mut tests = F::Tests::default();
-            for (span, item) in parsed_tests {
-                match item {
-                    Item::Test((name, test)) => tests.add_test(name, test, span, emitter),
-                    Item::Property(prop) => properties.add_property(prop, emitter),
+    choice((
+        test_parser().map(Item::Test).labelled("test section"),
+        F::Properties::property_parser(&mut PropertiesParseHelper::new(0))
+            .map(Item::Property)
+            .labelled("file property"),
+    ))
+    .padded_by(filler())
+    .map_with(|test, e| (e.span(), test))
+    .repeated()
+    .collect::<Vec<_>>()
+    .validate(|parsed_tests, _e, emitter| {
+        let mut properties = F::Properties::default();
+        let mut tests = F::Tests::default();
+        for (span, item) in parsed_tests {
+            match item {
+                Item::Test((name, test)) => {
+                    if let Some(name) = name {
+                        tests.add_test(name, test, span, emitter)
+                    } else {
+                        // Presumably we applied recovery and emitted an error, so skip it.
+                    }
+                }
+                Item::Property(prop) => {
+                    if let Some(prop) = prop {
+                        properties.add_property(prop, emitter)
+                    } else {
+                        // Presumably we applied recovery and emitted an error, so skip it.
+                    }
                 }
             }
-            F::new(properties, tests)
-        })
+        }
+        F::new(properties, tests)
+    })
 }
 
 fn filler<'a>() -> impl Parser<'a, &'a str, (), ParseError<'a>> {
@@ -204,7 +220,7 @@ fn smoke_parser() {
                     "blarg": UnstructuredTest {
                         properties: {},
                         subtests: {},
-                        span: 1..10,
+                        span: 1..9,
                     },
                     "stuff": UnstructuredTest {
                         properties: {},
@@ -290,7 +306,7 @@ fn smoke_parser() {
     ParseResult {
         output: None,
         errs: [
-            found '' '' at 66..67 expected "test section header", or "indentation at the proper level",
+            found '' '' at 66..67 expected "test section", or "file property",
         ],
     }
     "###);
@@ -488,26 +504,30 @@ pub trait Test<'a> {
     fn new(span: SimpleSpan, properties: Self::Properties, subtests: Self::Subtests) -> Self;
 }
 
-pub fn test_parser<'a, T>() -> impl Parser<'a, &'a str, (SectionHeader, T), ParseError<'a>>
+pub fn test_parser<'a, T>() -> impl Parser<'a, &'a str, (Option<SectionHeader>, T), ParseError<'a>>
 where
     T: Test<'a>,
 {
     #[derive(Debug)]
     enum Item<Tp, S> {
-        Subtest { name: SectionHeader, subtest: S },
+        Subtest {
+            name: Option<SectionHeader>,
+            subtest: S,
+        },
         Property(Tp),
-        Newline,
         Comment,
     }
 
     let items = choice((
-        subtest_parser().map(|(name, subtest)| Item::Subtest { name, subtest }),
+        comment(1).map(|_comment| Item::Comment).labelled("comment"),
+        subtest_parser()
+            .map(|(name, subtest)| Item::Subtest { name, subtest })
+            .labelled("subtest section"),
         T::Properties::property_parser(&mut PropertiesParseHelper::new(1))
-            .labelled("test property")
-            .map(Item::Property),
-        newline().labelled("empty line").map(|()| Item::Newline),
-        comment(1).map(|_comment| Item::Comment),
+            .map(Item::Property)
+            .labelled("test property"),
     ))
+    .padded_by(filler())
     .map_with(|item, e| (e.span(), item))
     .repeated()
     .collect::<Vec<_>>();
@@ -523,11 +543,21 @@ where
             let mut subtests = T::Subtests::default();
             for (span, item) in items {
                 match item {
-                    Item::Property(prop) => properties.add_property(prop, emitter),
-                    Item::Subtest { name, subtest } => {
-                        subtests.add_subtest(name, subtest, span, emitter)
+                    Item::Property(prop) => {
+                        if let Some(prop) = prop {
+                            properties.add_property(prop, emitter)
+                        } else {
+                            // Presumably we applied recovery and emitted an error, so skip it.
+                        }
                     }
-                    Item::Newline | Item::Comment => (),
+                    Item::Subtest { name, subtest } => {
+                        if let Some(name) = name {
+                            subtests.add_subtest(name, subtest, span, emitter)
+                        } else {
+                            // Presumably we applied recovery and emitted an error, so skip it.
+                        }
+                    }
+                    Item::Comment => (),
                 }
             }
             let test = T::new(e.span(), properties, subtests);
@@ -878,7 +908,7 @@ fn smoke_test() {
                                         },
                                     ),
                                 },
-                                span: 101..142,
+                                span: 101..144,
                             },
                         },
                         span: 1..144,
@@ -892,7 +922,8 @@ fn smoke_test() {
     );
 }
 
-fn subtest_parser<'a, S>() -> impl Parser<'a, &'a str, (SectionHeader, S), ParseError<'a>>
+pub fn subtest_parser<'a, S>(
+) -> impl Parser<'a, &'a str, (Option<SectionHeader>, S), ParseError<'a>>
 where
     S: Subtest<'a>,
 {
@@ -901,13 +932,18 @@ where
         .labelled("subtest section header")
         .then(
             S::Properties::property_parser(&mut PropertiesParseHelper::new(2))
+                .padded_by(filler())
                 .labelled("subtest property")
                 .repeated()
                 .collect::<Vec<_>>()
                 .validate(|props, e, emitter| {
                     let mut properties = S::Properties::default();
                     for prop in props {
-                        properties.add_property(prop, emitter);
+                        if let Some(prop) = prop {
+                            properties.add_property(prop, emitter);
+                        } else {
+                            // An error was presumably emitted during recovery, so skip it.
+                        }
                     }
                     S::new(e.span(), properties)
                 }),
@@ -927,7 +963,9 @@ fn smoke_subtest() {
     ParseResult {
         output: Some(
             (
-                "stuff and things",
+                Some(
+                    "stuff and things",
+                ),
                 UnstructuredSubtest {
                     properties: {},
                     span: 22..22,
@@ -948,7 +986,9 @@ fn smoke_subtest() {
     ParseResult {
         output: Some(
             (
-                "stuff and things",
+                Some(
+                    "stuff and things",
+                ),
                 UnstructuredSubtest {
                     properties: {
                         "some_prop": Unconditional(
@@ -975,7 +1015,9 @@ fn smoke_subtest() {
     ParseResult {
         output: Some(
             (
-                "stuff and things",
+                Some(
+                    "stuff and things",
+                ),
                 UnstructuredSubtest {
                     properties: {
                         "expected": Conditional(
@@ -1013,6 +1055,108 @@ fn indent<'a>(level: u8) -> impl Parser<'a, &'a str, (), ParseError<'a>> {
         .exactly(level_as_space_count)
         .then_ignore(just(" ").not())
         .labelled("indentation at the proper level")
+}
+
+fn anything_at_indent_or_greater<'a>(
+    level: u8,
+) -> impl Clone + Parser<'a, &'a str, (), ParseError<'a>> {
+    let level_as_space_count = usize::from(level) * 2;
+    let indent = just(' ').repeated().exactly(level_as_space_count);
+    // TODO: Figure out why this doesn't work for line-oriented content:
+    //
+    // ```
+    // any()
+    //     .and_is(newline().not())
+    //     .repeated()
+    //     .then(newline().or(end()))
+    //     .repeated()
+    //     .at_least(1)
+    // ```
+    custom(move |input| {
+        if input.peek().is_some() {
+            loop {
+                let start = input.save();
+
+                // OPT: We _might_ be able to save some cycles by looping on individual characters and
+                // a finer-grained state machine.
+                match input.parse(indent.ignored()) {
+                    Ok(()) => {
+                        input.parse(rest_of_line().ignored())?;
+                        let eol = input.save();
+                        match input.parse(newline()) {
+                            Ok(()) => (),
+                            Err(_e) => {
+                                input.rewind(eol);
+                                if input.next().is_none() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(_e) => {
+                        input.rewind(start);
+                        let offset = input.offset();
+                        match input.parse(inline_whitespace().then(newline().or(end())).ignored()) {
+                            Ok(()) => {
+                                let made_progress = input.offset() != offset;
+                                if !made_progress {
+                                    break;
+                                }
+                            }
+                            Err(_e) => {
+                                input.rewind(start);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    })
+    .labelled("any content at specified indent or greater")
+}
+
+#[test]
+fn anything_at_indent_or_greater_works() {
+    insta::assert_debug_snapshot!(anything_at_indent_or_greater(0).parse("").into_result(), @r###"
+    Ok(
+        (),
+    )
+    "###);
+    insta::assert_debug_snapshot!(anything_at_indent_or_greater(0).parse("asdf\nblarg").into_result(), @r###"
+    Ok(
+        (),
+    )
+    "###);
+    insta::assert_debug_snapshot!(anything_at_indent_or_greater(0).parse("\n\n\n").into_result(), @r###"
+    Ok(
+        (),
+    )
+    "###);
+    insta::assert_debug_snapshot!(anything_at_indent_or_greater(1).parse("").into_result(), @r###"
+    Ok(
+        (),
+    )
+    "###);
+    insta::assert_debug_snapshot!(anything_at_indent_or_greater(1).parse("asdf\nblarg").into_result(), @r###"
+    Err(
+        [
+            found ''a'' at 0..1 expected end of input,
+        ],
+    )
+    "###);
+    insta::assert_debug_snapshot!(anything_at_indent_or_greater(1).parse("\n\n\n").into_result(), @r###"
+    Err(
+        [
+            found ''\n'' at 0..1 expected end of input,
+        ],
+    )
+    "###);
+}
+
+fn rest_of_line<'a>() -> impl Clone + Parser<'a, &'a str, &'a str, ParseError<'a>> {
+    any().and_is(newline().not()).repeated().to_slice()
 }
 
 #[test]
@@ -1150,36 +1294,34 @@ impl Debug for SectionHeader {
 }
 
 impl SectionHeader {
-    fn parser<'a>(indentation: u8) -> impl Parser<'a, &'a str, Self, ParseError<'a>> {
+    fn parser<'a>(indentation: u8) -> impl Parser<'a, &'a str, Option<Self>, ParseError<'a>> {
         let name = custom::<_, &str, _, _>(|input| {
             let mut escaped_name = String::new();
             loop {
-                match input.peek() {
-                    None => {
-                        let start = input.offset();
-                        input.skip();
-                        let span = input.span_since(start);
-                        return Err(Rich::custom(
-                            span,
-                            "reached end of input before ending section header",
-                        ));
-                    }
-                    Some(']') => break,
-                    Some('\\') => {
+                if input.parse(newline().or(end()).rewind()).is_ok() {
+                    return Ok(None);
+                }
+                match input.peek().unwrap() {
+                    ']' => break,
+                    '\\' => {
                         // NOTE: keep in sync. with the escaping in `Self::escaped`!
                         let c = input.parse(just("\\]").to(']'))?;
                         escaped_name.push(c);
                     }
-                    Some(other) => {
+                    other => {
                         escaped_name.push(other);
                         input.skip();
                     }
                 }
             }
-            Ok(escaped_name)
+            Ok(Some(escaped_name))
         })
         .validate(|escaped_name, e, emitter| {
-            for (idx, c) in escaped_name.char_indices() {
+            for (idx, c) in escaped_name
+                .as_ref()
+                .iter()
+                .flat_map(|cs| cs.char_indices())
+            {
                 if c.is_control() {
                     let span_idx = e.span().start.checked_add(idx).unwrap();
                     emitter.emit(Rich::custom(
@@ -1190,9 +1332,13 @@ impl SectionHeader {
             }
             escaped_name
         });
-        indent(indentation)
-            .ignore_then(name.delimited_by(just('['), just(']')))
-            .map(Self)
+        indent(indentation).then(just('[')).ignore_then(
+            name.then_ignore(just(']'))
+                .recover_with(via_parser(
+                    rest_of_line().map(ToOwned::to_owned).map(|_| None),
+                ))
+                .map(|opt| opt.map(Self)),
+        )
     }
 
     pub fn unescaped(&self) -> impl Display + '_ {
@@ -1233,7 +1379,9 @@ fn smoke_section_name() {
     assert_debug_snapshot!(section_name(0).parse("[hoot]"), @r###"
     ParseResult {
         output: Some(
-            "hoot",
+            Some(
+                "hoot",
+            ),
         ),
         errs: [],
     }
@@ -1241,7 +1389,9 @@ fn smoke_section_name() {
     assert_debug_snapshot!(section_name(0).parse("[asdf\\]blarg]"), @r###"
     ParseResult {
         output: Some(
-            "asdf]blarg",
+            Some(
+                "asdf]blarg",
+            ),
         ),
         errs: [],
     }
@@ -1252,6 +1402,222 @@ fn smoke_section_name() {
         errs: [
             found ''b'' at 6..7 expected end of input,
         ],
+    }
+    "###);
+}
+
+#[test]
+fn test_recover_gud_plzthx() {
+    let test = newline().then(test_parser::<UnstructuredTest>());
+    insta::assert_debug_snapshot!(test.parse(
+        r#"
+[cts.https.html?q=webgpu:api,operation,adapter,requestAdapter:requestAdapter:*]
+  [:powerPreference="_undef_";forceFallbackAdapter="_undef_"]
+    asdf: blarg
+    expected:
+      if os == "win" and debug: [PASS, FAIL]
+  [:powerPreference="_undef_";forceFallbackAdapter=false]
+"#), @r###"
+    ParseResult {
+        output: Some(
+            (
+                (),
+                (
+                    Some(
+                        "cts.https.html?q=webgpu:api,operation,adapter,requestAdapter:requestAdapter:*",
+                    ),
+                    UnstructuredTest {
+                        properties: {},
+                        subtests: {
+                            ":powerPreference=\"_undef_\";forceFallbackAdapter=\"_undef_\"": UnstructuredSubtest {
+                                properties: {
+                                    "asdf": Unconditional(
+                                        "blarg",
+                                    ),
+                                    "expected": Conditional(
+                                        ConditionalValue {
+                                            conditions: [
+                                                (
+                                                    And(
+                                                        Eq(
+                                                            Value(
+                                                                Variable(
+                                                                    "os",
+                                                                ),
+                                                            ),
+                                                            Value(
+                                                                Literal(
+                                                                    String(
+                                                                        "win",
+                                                                    ),
+                                                                ),
+                                                            ),
+                                                        ),
+                                                        Value(
+                                                            Variable(
+                                                                "debug",
+                                                            ),
+                                                        ),
+                                                    ),
+                                                    "[PASS, FAIL]",
+                                                ),
+                                            ],
+                                            fallback: None,
+                                        },
+                                    ),
+                                },
+                                span: 143..218,
+                            },
+                            ":powerPreference=\"_undef_\";forceFallbackAdapter=false": UnstructuredSubtest {
+                                properties: {},
+                                span: 276..276,
+                            },
+                        },
+                        span: 1..276,
+                    },
+                ),
+            ),
+        ),
+        errs: [],
+    }
+    "###);
+}
+
+#[test]
+fn recover_gud_plz() {
+    let file_parser = newline().ignore_then(UnstructuredFile::parser());
+    insta::assert_debug_snapshot!(file_parser.parse(
+        r#"
+readysetgameover: true
+[cts.https.html?q=webgpu:api,operation,adapter,requestAdapter:requestAdapter:*]
+  [:powerPreference="_undef_";forceFallbackAdapter="_undef_"]
+    expected: STUPID
+    wat: meh
+
+  [:powerPreference="_undef_";forceFallbackAdapter=false]
+    expected:
+      if os == "win" and debug: [PASS, FAIL]
+
+  [:powerPreference="_undef_";forceFallbackAdapter=true]
+    expected:
+      if os == "win" and debug: [PASS, FAIL]
+
+[whataboutme]
+  [shrug]
+"#,
+    ), @r###"
+    ParseResult {
+        output: Some(
+            UnstructuredFile {
+                properties: {
+                    "readysetgameover": Unconditional(
+                        "true",
+                    ),
+                },
+                tests: {
+                    "cts.https.html?q=webgpu:api,operation,adapter,requestAdapter:requestAdapter:*": UnstructuredTest {
+                        properties: {},
+                        subtests: {
+                            ":powerPreference=\"_undef_\";forceFallbackAdapter=\"_undef_\"": UnstructuredSubtest {
+                                properties: {
+                                    "expected": Unconditional(
+                                        "STUPID",
+                                    ),
+                                    "wat": Unconditional(
+                                        "meh",
+                                    ),
+                                },
+                                span: 166..201,
+                            },
+                            ":powerPreference=\"_undef_\";forceFallbackAdapter=false": UnstructuredSubtest {
+                                properties: {
+                                    "expected": Conditional(
+                                        ConditionalValue {
+                                            conditions: [
+                                                (
+                                                    And(
+                                                        Eq(
+                                                            Value(
+                                                                Variable(
+                                                                    "os",
+                                                                ),
+                                                            ),
+                                                            Value(
+                                                                Literal(
+                                                                    String(
+                                                                        "win",
+                                                                    ),
+                                                                ),
+                                                            ),
+                                                        ),
+                                                        Value(
+                                                            Variable(
+                                                                "debug",
+                                                            ),
+                                                        ),
+                                                    ),
+                                                    "[PASS, FAIL]",
+                                                ),
+                                            ],
+                                            fallback: None,
+                                        },
+                                    ),
+                                },
+                                span: 259..319,
+                            },
+                            ":powerPreference=\"_undef_\";forceFallbackAdapter=true": UnstructuredSubtest {
+                                properties: {
+                                    "expected": Conditional(
+                                        ConditionalValue {
+                                            conditions: [
+                                                (
+                                                    And(
+                                                        Eq(
+                                                            Value(
+                                                                Variable(
+                                                                    "os",
+                                                                ),
+                                                            ),
+                                                            Value(
+                                                                Literal(
+                                                                    String(
+                                                                        "win",
+                                                                    ),
+                                                                ),
+                                                            ),
+                                                        ),
+                                                        Value(
+                                                            Variable(
+                                                                "debug",
+                                                            ),
+                                                        ),
+                                                    ),
+                                                    "[PASS, FAIL]",
+                                                ),
+                                            ],
+                                            fallback: None,
+                                        },
+                                    ),
+                                },
+                                span: 376..436,
+                            },
+                        },
+                        span: 24..436,
+                    },
+                    "whataboutme": UnstructuredTest {
+                        properties: {},
+                        subtests: {
+                            "shrug": UnstructuredSubtest {
+                                properties: {},
+                                span: 460..460,
+                            },
+                        },
+                        span: 436..460,
+                    },
+                },
+            },
+        ),
+        errs: [],
     }
     "###);
 }
