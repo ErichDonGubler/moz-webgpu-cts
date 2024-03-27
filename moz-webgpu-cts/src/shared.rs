@@ -186,6 +186,22 @@ impl<K, V> MaybeCollapsed<V, BTreeMap<K, V>> {
             MaybeCollapsed::Expanded(exp) => exp.get(key),
         }
     }
+
+    fn map_ref_normalized<T, F>(&self, f: F) -> MaybeCollapsed<T, BTreeMap<K, T>>
+    where
+        K: Clone + IntoEnumIterator + Ord,
+        T: Clone + Default + Eq,
+        F: FnMut(&V) -> T,
+    {
+        let mut f = f;
+        match self {
+            MaybeCollapsed::Collapsed(coll) => MaybeCollapsed::Collapsed(f(coll)),
+            MaybeCollapsed::Expanded(exp) => {
+                let new_values = exp.iter().map(|(k, v)| (k.clone(), f(v))).collect();
+                normalize(new_values, std::convert::identity)
+            }
+        }
+    }
 }
 
 impl<C, E> Default for MaybeCollapsed<C, E>
@@ -272,6 +288,16 @@ where
             .and_then(|by_profile| by_profile.get(&build_profile))
             .copied()
             .unwrap_or_default()
+    }
+
+    pub fn map_ref<T, F>(&self, f: F) -> NormalizedPropertyValueData<T>
+    where
+        T: Clone + Default + Eq,
+        F: FnMut(&Expectation<Out>) -> T,
+    {
+        let mut f = f;
+        self.inner()
+            .map_ref_normalized(|exps| exps.map_ref_normalized(|exps| f(exps)))
     }
 }
 

@@ -92,6 +92,7 @@ enum Subcommand {
         #[clap(value_enum, long, default_value_t = Default::default())]
         on_zero_item: OnZeroItem,
     },
+    ShowPermaPasses,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -1452,6 +1453,110 @@ fn run(cli: Cli) -> ExitCode {
                 println!("{platform:?}:{sections}")
             });
             println!("Full analysis: {analysis:#?}");
+            ExitCode::SUCCESS
+        }
+        Subcommand::ShowPermaPasses => {
+            let tests_by_name = {
+                let mut found_parse_err = false;
+                let raw_test_files_by_path = match read_metadata() {
+                    Ok(paths) => paths,
+                    Err(AlreadyReportedToCommandline) => return ExitCode::FAILURE,
+                };
+                let extracted = raw_test_files_by_path
+                    .iter()
+                    .filter_map(|(path, file_contents)| {
+                        match chumsky::Parser::parse(&metadata::File::parser(), file_contents)
+                            .into_result()
+                        {
+                            Ok(File {
+                                properties: _,
+                                tests,
+                            }) => Some(tests.into_iter().map({
+                                let gecko_checkout = &gecko_checkout;
+                                move |(name, test)| {
+                                    let SectionHeader(name) = &name;
+                                    let test_path = TestPath::from_fx_metadata_test(
+                                        path.strip_prefix(gecko_checkout).unwrap(),
+                                        name,
+                                    )
+                                    .unwrap();
+                                    (test_path.into_owned(), test)
+                                }
+                            })),
+                            Err(errors) => {
+                                found_parse_err = true;
+                                render_metadata_parse_errors(path, file_contents, errors);
+                                None
+                            }
+                        }
+                    })
+                    .flatten()
+                    .collect::<BTreeMap<_, _>>();
+                if found_parse_err {
+                    log::error!(concat!(
+                        "found one or more failures while parsing metadata, ",
+                        "see above for more details"
+                    ));
+                    return ExitCode::FAILURE;
+                }
+                extracted
+            };
+
+            #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+            enum Case {
+                #[default]
+                PermaPass,
+                PermaFail,
+                Other,
+            }
+            println!("file\ttest\tsubtest");
+            for (test_path, test) in tests_by_name.iter() {
+                let Test {
+                    properties,
+                    subtests,
+                } = test;
+                if subtests.is_empty() {
+                    let prop = properties
+                        .expectations
+                        .as_ref()
+                        .map(|exps| {
+                            exps.map_ref(|exps| match exps.as_permanent() {
+                                Some(TestOutcome::Ok) => Case::PermaPass,
+                                _ => Case::Other,
+                            })
+                        })
+                        .unwrap_or_default();
+                    if prop == Default::default() {
+                        println!(
+                            "{}\t{}\t",
+                            test_path.rel_metadata_path_fx(),
+                            test_path.test_name()
+                        );
+                    }
+                } else {
+                    for (subtest_name, subtest) in subtests {
+                        let Subtest { properties } = subtest;
+                        let prop = properties
+                            .expectations
+                            .as_ref()
+                            .map(|exps| {
+                                exps.map_ref(|exps| match exps.as_permanent() {
+                                    Some(SubtestOutcome::Pass) => Case::PermaPass,
+                                    Some(SubtestOutcome::Fail) => Case::PermaFail,
+                                    _ => Case::Other,
+                                })
+                            })
+                            .unwrap_or_default();
+                        if prop == Default::default() {
+                            println!(
+                                "{}\t{}\t{subtest_name:?}",
+                                test_path.rel_metadata_path_fx(),
+                                test_path.test_name(),
+                            );
+                        }
+                    }
+                }
+            }
             ExitCode::SUCCESS
         }
     }
