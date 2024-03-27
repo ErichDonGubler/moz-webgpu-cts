@@ -191,18 +191,15 @@ where
 ///
 /// [`TestProps`]: crate::metadata::TestProps
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NormalizedExpectationPropertyValue<Out>(NormalizedExpectationPropertyValueData<Out>)
+pub struct NormalizedExpectationPropertyValue<Out>(NormalizedPropertyValueData<Expectation<Out>>)
 where
     Out: EnumSetType;
 
-pub type NormalizedExpectationByBuildProfile<Out> =
-    MaybeCollapsed<Expectation<Out>, BTreeMap<BuildProfile, Expectation<Out>>>;
+/// Data from a [`NormalizedPropertyValue`].
+pub type NormalizedPropertyValueData<T> =
+    MaybeCollapsed<NormalizedByBuildProfile<T>, BTreeMap<Platform, NormalizedByBuildProfile<T>>>;
 
-/// Data from a [`NormalizedExpectationPropertyValue`].
-pub type NormalizedExpectationPropertyValueData<Out> = MaybeCollapsed<
-    NormalizedExpectationByBuildProfile<Out>,
-    BTreeMap<Platform, NormalizedExpectationByBuildProfile<Out>>,
->;
+pub type NormalizedByBuildProfile<T> = MaybeCollapsed<T, BTreeMap<BuildProfile, T>>;
 
 impl<Out> Default for NormalizedExpectationPropertyValue<Out>
 where
@@ -225,12 +222,12 @@ where
         )))
     }
 
-    pub fn inner(&self) -> &NormalizedExpectationPropertyValueData<Out> {
+    pub fn inner(&self) -> &NormalizedPropertyValueData<Expectation<Out>> {
         let Self(inner) = self;
         inner
     }
 
-    pub fn into_inner(self) -> NormalizedExpectationPropertyValueData<Out> {
+    pub fn into_inner(self) -> NormalizedPropertyValueData<Expectation<Out>> {
         let Self(inner) = self;
         inner
     }
