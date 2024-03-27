@@ -172,6 +172,22 @@ pub enum MaybeCollapsed<C, E> {
     Expanded(E),
 }
 
+impl<K, V> MaybeCollapsed<V, BTreeMap<K, V>> {
+    fn get<Q>(&self, key: &Q) -> Option<&V>
+    where
+        K: Ord,
+        // Copy the constraints from `BTreeMap::get`:
+        Q: ?Sized,
+        K: std::borrow::Borrow<Q>,
+        Q: Ord,
+    {
+        match self {
+            MaybeCollapsed::Collapsed(coll) => Some(coll),
+            MaybeCollapsed::Expanded(exp) => exp.get(key),
+        }
+    }
+}
+
 impl<C, E> Default for MaybeCollapsed<C, E>
 where
     C: Default,
@@ -251,21 +267,11 @@ where
     where
         Out: Default,
     {
-        match self.inner() {
-            MaybeCollapsed::Collapsed(exps) => match exps {
-                MaybeCollapsed::Collapsed(exps) => *exps,
-                MaybeCollapsed::Expanded(exps) => {
-                    exps.get(&build_profile).copied().unwrap_or_default()
-                }
-            },
-            MaybeCollapsed::Expanded(exps) => exps
-                .get(&platform)
-                .and_then(|exps| match exps {
-                    MaybeCollapsed::Collapsed(exps) => Some(*exps),
-                    MaybeCollapsed::Expanded(exps) => exps.get(&build_profile).copied(),
-                })
-                .unwrap_or_default(),
-        }
+        self.inner()
+            .get(&platform)
+            .and_then(|by_profile| by_profile.get(&build_profile))
+            .copied()
+            .unwrap_or_default()
     }
 }
 
