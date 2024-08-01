@@ -90,6 +90,10 @@ where
     {
         self.inner().is_superset(rep.inner())
     }
+
+    pub fn is_subset(&self, rep: EnumSet<Out>) -> bool {
+        self.inner().is_subset(rep)
+    }
 }
 
 impl<Out> Display for Expected<Out>

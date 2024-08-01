@@ -269,6 +269,8 @@ enum UpdateBacklogSubcommand {
         #[clap(long, default_value_t = true)]
         only_across_all_platforms: bool,
     },
+    /// Remove tests that, at most, expect `PASS`, `TIMEOUT`, and `NOTRUN` outcomes from `backlog`.
+    PromoteNotNotPassing,
 }
 
 fn main() -> ExitCode {
@@ -965,6 +967,7 @@ fn run(cli: Cli) -> ExitCode {
             enum Case {
                 #[default]
                 PermaPass,
+                NotNotPass,
                 Other,
             }
             let mut found_write_err = false;
@@ -1003,6 +1006,12 @@ fn run(cli: Cli) -> ExitCode {
                                             [(platform, build_profile)];
                                     if let Some(SubtestOutcome::Pass) = expected.as_permanent() {
                                         Case::PermaPass
+                                    } else if expected.is_subset(
+                                        SubtestOutcome::Pass
+                                            | SubtestOutcome::Timeout
+                                            | SubtestOutcome::NotRun,
+                                    ) {
+                                        Case::NotNotPass
                                     } else {
                                         Case::Other
                                     }
@@ -1027,8 +1036,18 @@ fn run(cli: Cli) -> ExitCode {
                                 properties.implementation_status =
                                     Some(cases.map(|case| match case {
                                         Case::PermaPass => ImplementationStatus::Implementing,
-                                        Case::Other => ImplementationStatus::Backlog,
+                                        Case::NotNotPass | Case::Other => {
+                                            ImplementationStatus::Backlog
+                                        }
                                     }));
+                            }
+                        }
+                        UpdateBacklogSubcommand::PromoteNotNotPassing => {
+                            if matches!(
+                                value_across_all_platforms(),
+                                Ok(Case::PermaPass | Case::NotNotPass)
+                            ) {
+                                properties.implementation_status = None;
                             }
                         }
                     }
