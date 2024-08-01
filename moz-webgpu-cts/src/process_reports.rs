@@ -164,6 +164,14 @@ pub(crate) fn process_reports(
         meta_files_by_path,
     } = args;
 
+    if exec_report_paths.is_empty() {
+        log::error!(concat!(
+            "no report paths specified; ",
+            "this command doesn't make sense without them!"
+        ));
+        return Err(AlreadyReportedToCommandline);
+    }
+
     let mut file_props_by_file = IndexMap::<Utf8PathBuf, FileProps>::default();
     let mut entries_by_cts_path = IndexMap::<String, EntryByCtsPath<'_>>::default();
     let mut other_entries_by_test = IndexMap::<TestEntryPath<'_>, TestEntry>::default();
@@ -251,8 +259,6 @@ pub(crate) fn process_reports(
     }
 
     log::debug!("gathering reported test outcomes for reconciliation with metadata…");
-
-    let using_reports = !exec_report_paths.is_empty();
 
     let (exec_reports_sender, exec_reports_receiver) = channel();
     exec_report_paths
@@ -439,7 +445,7 @@ pub(crate) fn process_reports(
                 log::info!("new test entry: {test_entry_path:?}")
             }
 
-            if test_reported.is_empty() && using_reports {
+            if test_reported.is_empty() {
                 let test_entry_path = &test_entry_path;
                 let msg = lazy_format!("no entries found in reports for {:?}", test_entry_path);
                 match preset {
@@ -512,7 +518,7 @@ pub(crate) fn process_reports(
                         reported: subtest_reported,
                     } = subtest;
 
-                    if subtest_reported.is_empty() && using_reports {
+                    if subtest_reported.is_empty() {
                         let test_entry_path = &test_entry_path;
                         let subtest_name = &subtest_name;
                         let msg = lazy_format!(
