@@ -14,6 +14,7 @@ use format::lazy_format;
 use indexmap::IndexMap;
 use miette::{IntoDiagnostic, Report, WrapErr};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
+use serde_json::Deserializer;
 use whippit::metadata::SectionHeader;
 
 use crate::{
@@ -263,8 +264,17 @@ pub(crate) fn process_reports(
                 .map_err(Report::msg)
                 .wrap_err("failed to open file")
                 .and_then(|reader| {
-                    serde_json::from_reader::<_, ExecutionReport>(reader)
-                        .map(Some)
+                    // Servo can have two reports in same json file (two-record JSONL file)
+                    // First one is from the first run (all test are run/reported)
+                    // second one only runs unexpected results (from first run) for filtering
+                    //
+                    // TODO(sagudev): merge reports instead of using only first one
+
+                    let mut report_stream =
+                        Deserializer::from_reader(reader).into_iter::<ExecutionReport>();
+                    report_stream
+                        .next()
+                        .transpose()
                         .or_else(|e| {
                             if e.is_eof() && matches!((e.line(), e.column()), (1, 0)) {
                                 Ok(None)
@@ -274,6 +284,12 @@ pub(crate) fn process_reports(
                         })
                         .into_diagnostic()
                         .wrap_err("failed to parse JSON")
+                        .inspect(|_| {
+                            let count = report_stream.count();
+                            if count > 0 && browser != Browser::Servo {
+                                log::warn!("{} contains {count} leftover objects", path.display());
+                            }
+                        })
                 })
                 .wrap_err_with(|| {
                     format!(
