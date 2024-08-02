@@ -93,6 +93,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arcstr"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f907281554a3d0312bb7aab855a8e0ef6cbf1614d06de54105039ca8b34460e"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "backtrace"
 version = "0.3.71"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -587,6 +596,7 @@ dependencies = [
 name = "moz-webgpu-cts"
 version = "1.2.0"
 dependencies = [
+ "arcstr",
  "camino",
  "clap",
  "enum-map",
