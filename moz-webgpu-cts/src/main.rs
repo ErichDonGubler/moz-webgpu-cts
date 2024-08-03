@@ -1,3 +1,4 @@
+mod aggregate_timings_from_logs;
 mod process_reports;
 mod report;
 mod wpt;
@@ -119,6 +120,11 @@ enum Subcommand {
         /// to `implementing`.
         #[clap(value_enum, long)]
         implementation_status: Vec<ImplementationStatus>,
+    },
+    AggregateTimingsFromLogs {
+        log_paths: Vec<PathBuf>,
+        #[clap(long = "glob", value_name = "LOG_GLOB")]
+        log_globs: Vec<String>,
     },
     /// Parse test metadata, apply automated fixups, and re-emit it in normalized form.
     #[clap(name = "fixup", alias = "fmt")]
@@ -378,6 +384,26 @@ fn run(cli: Cli) -> ExitCode {
                     allowed: allowed_implementation_statuses,
                 },
             ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(AlreadyReportedToCommandline) => ExitCode::FAILURE,
+            }
+        }
+        Subcommand::AggregateTimingsFromLogs {
+            log_paths,
+            log_globs,
+        } => {
+            let log_paths_res = FileSpec {
+                paths: log_paths,
+                globs: log_globs,
+            }
+            .into_paths("log file(s)");
+
+            let log_paths = match log_paths_res {
+                Ok(ok) => ok,
+                Err(AlreadyReportedToCommandline) => return ExitCode::FAILURE,
+            };
+
+            match aggregate_timings_from_logs::aggregate_timings_from_logs(browser, log_paths) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(AlreadyReportedToCommandline) => ExitCode::FAILURE,
             }

@@ -447,7 +447,7 @@ impl<'a> TestEntryPath<'a> {
 /// An error encountered during [`TestEntryPath::from_execution_report`].
 #[derive(Debug)]
 pub struct ExecutionReportPathError<'a> {
-    test_url_path: &'a str,
+    pub(crate) test_url_path: &'a str,
 }
 
 impl Display for ExecutionReportPathError<'_> {
