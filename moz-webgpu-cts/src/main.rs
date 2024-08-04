@@ -115,6 +115,9 @@ enum Subcommand {
         /// The heuristic for resolving differences between current metadata and processed reports.
         #[clap(value_enum, long, default_value_t = UpdateExpectedPreset::ResetContradictory)]
         preset: UpdateExpectedPreset,
+        /// The heuristic for handling metadata that is not present in processed reports.
+        #[clap(value_enum, long, default_value_t = MissingFromReport::Delete)]
+        on_missing_from_report: MissingFromReport,
         /// `implementation-status`es that changes should be applied to. If not specified, defaults
         /// to `implementing`.
         #[clap(value_enum, long)]
@@ -282,6 +285,26 @@ impl From<UpdateExpectedPreset> for process_reports::ReportProcessingPreset {
     }
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum MissingFromReport {
+    Delete,
+    DeleteAndInfo,
+    DeleteAndWarn,
+    Keep,
+}
+
+impl From<MissingFromReport> for process_reports::MissingFromReport {
+    fn from(value: MissingFromReport) -> Self {
+        use process_reports::Log;
+        match value {
+            MissingFromReport::Delete => Self::Delete(Log::Silent),
+            MissingFromReport::DeleteAndInfo => Self::Delete(Log::Info),
+            MissingFromReport::DeleteAndWarn => Self::Delete(Log::Warn),
+            MissingFromReport::Keep => Self::Keep(Log::Info),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 enum OnZeroItem {
     Show,
@@ -324,6 +347,7 @@ fn run(cli: Cli) -> ExitCode {
             &checkout,
             exec_report_spec,
             process_reports::ReportProcessingPreset::MigrateTestStructure,
+            process_reports::MissingFromReport::Delete(process_reports::Log::Warn),
             &mut should_update_expected::NeverUpdateExpected,
         ) {
             Ok(()) => ExitCode::SUCCESS,
@@ -332,6 +356,7 @@ fn run(cli: Cli) -> ExitCode {
         Subcommand::UpdateExpected {
             exec_report_spec,
             preset,
+            on_missing_from_report,
             implementation_status,
         } => {
             let allowed_implementation_statuses = if implementation_status.is_empty() {
@@ -344,6 +369,7 @@ fn run(cli: Cli) -> ExitCode {
                 &checkout,
                 exec_report_spec,
                 preset.into(),
+                on_missing_from_report.into(),
                 &mut should_update_expected::ImplementationStatusFilter {
                     allowed: allowed_implementation_statuses,
                 },
@@ -1354,6 +1380,7 @@ fn process_reports(
     checkout: &Path,
     exec_report_spec: ExecReportSpec,
     preset: process_reports::ReportProcessingPreset,
+    on_missing_from_report: process_reports::MissingFromReport,
     should_update_expected: &mut dyn ShouldUpdateExpected,
 ) -> Result<(), AlreadyReportedToCommandline> {
     let exec_report_paths = exec_report_spec.paths()?;
@@ -1366,6 +1393,7 @@ fn process_reports(
         checkout,
         exec_report_paths,
         preset,
+        on_missing_from_report,
         should_update_expected,
         meta_files_by_path,
     })?;
