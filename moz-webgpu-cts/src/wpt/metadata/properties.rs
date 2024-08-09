@@ -276,6 +276,16 @@ impl<T> ExpandedPropertyValue<T> {
         )
     }
 
+    pub(crate) fn map_with<U, F>(self, f: F) -> ExpandedPropertyValue<U>
+    where
+        F: FnMut((Platform, BuildProfile), T) -> U,
+    {
+        let mut f = f;
+        ExpandedPropertyValue(self.into_inner().map(|platform, by_build_profile| {
+            by_build_profile.map(|build_profile, t| f((platform, build_profile), t))
+        }))
+    }
+
     fn into_inner(self) -> ExpandedPropertyValueData<T> {
         let Self(inner) = self;
         inner

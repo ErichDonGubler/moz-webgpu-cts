@@ -130,9 +130,10 @@ enum Subcommand {
     /// Identify and promote tests that are ready to come out of the `backlog` implementation
     /// status.
     UpdateBacklog {
+        direction: UpdateBacklogDirection,
         /// The mode to use for updating tests.
         #[clap(subcommand)]
-        preset: UpdateBacklogSubcommand,
+        criteria: UpdateBacklogCriteria,
     },
     /// Dump all metadata as JSON. Do so at your own risk; no guarantees are made about the
     /// schema of this JSON, for now.
@@ -289,11 +290,34 @@ enum OnZeroItem {
     Hide,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum UpdateBacklogDirection {
+    Promote,
+    Demote,
+    Sync,
+}
+
+impl UpdateBacklogDirection {
+    pub fn can_promote(self) -> bool {
+        match self {
+            Self::Promote | Self::Sync => true,
+            Self::Demote => false,
+        }
+    }
+
+    pub fn can_demote(self) -> bool {
+        match self {
+            Self::Demote | Self::Sync => true,
+            Self::Promote => false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Parser)]
-enum UpdateBacklogSubcommand {
-    /// Remove tests that expect only `PASS` outcomes on all platforms from `backlog`.
-    PromotePermaPassing {
-        #[clap(long, default_value_t = true)]
+enum UpdateBacklogCriteria {
+    /// Determine status based on `PASS` outcomes on all platforms from `backlog`.
+    PermaPassing {
+        #[clap(long)]
         only_across_all_platforms: bool,
     },
 }
@@ -978,7 +1002,10 @@ fn run(cli: Cli) -> ExitCode {
             println!("Full analysis: {analysis:#?}");
             ExitCode::SUCCESS
         }
-        Subcommand::UpdateBacklog { preset } => {
+        Subcommand::UpdateBacklog {
+            direction,
+            criteria,
+        } => {
             let mut files = {
                 let mut found_parse_err = false;
                 let extracted = read_and_parse_all_metadata(browser, &checkout)
@@ -1056,18 +1083,40 @@ fn run(cli: Cli) -> ExitCode {
                     // subtests afterwards.
                     let value_across_all_platforms =
                         || cases.into_iter().map(|(_, case)| case).all_equal_value();
-                    match preset {
-                        UpdateBacklogSubcommand::PromotePermaPassing {
+                    fn apply_criteria(
+                        direction: UpdateBacklogDirection,
+                        case: Case,
+                    ) -> Option<ImplementationStatus> {
+                        match case {
+                            Case::PermaPass if direction.can_promote() => {
+                                Some(ImplementationStatus::Implementing)
+                            }
+                            Case::Other if direction.can_demote() => {
+                                Some(ImplementationStatus::Backlog)
+                            }
+                            _ => None,
+                        }
+                    }
+                    match criteria {
+                        UpdateBacklogCriteria::PermaPassing {
                             only_across_all_platforms,
                         } => {
-                            if matches!(value_across_all_platforms(), Ok(Case::PermaPass)) {
-                                properties.implementation_status = None;
-                            } else if !only_across_all_platforms {
-                                properties.implementation_status =
-                                    Some(cases.map(|case| match case {
-                                        Case::PermaPass => ImplementationStatus::Implementing,
-                                        Case::Other => ImplementationStatus::Backlog,
-                                    }));
+                            if only_across_all_platforms {
+                                properties.implementation_status = apply_criteria(
+                                    direction,
+                                    value_across_all_platforms().unwrap_or(Case::Other),
+                                )
+                                .map(ExpandedPropertyValue::unconditional)
+                                .or(properties.implementation_status);
+                            } else {
+                                let old_impl_status =
+                                    properties.implementation_status.unwrap_or_default();
+                                properties.implementation_status.replace(cases.map_with(
+                                    |key, case| {
+                                        apply_criteria(direction, case)
+                                            .unwrap_or_else(|| old_impl_status[key])
+                                    },
+                                ));
                             }
                         }
                     }
