@@ -1,3 +1,4 @@
+mod aggregate_timings_from_logs;
 mod process_reports;
 mod report;
 mod wpt;
@@ -41,7 +42,7 @@ use process_reports::{
     should_update_expected::{self, ShouldUpdateExpected},
     ProcessReportsArgs,
 };
-use wax::Glob;
+use wax::{walk::Entry as _, Glob};
 use whippit::{
     metadata::SectionHeader,
     reexport::chumsky::{self, prelude::Rich},
@@ -120,6 +121,11 @@ enum Subcommand {
         #[clap(value_enum, long)]
         implementation_status: Vec<ImplementationStatus>,
     },
+    AggregateTimingsFromLogs {
+        log_paths: Vec<PathBuf>,
+        #[clap(long = "glob", value_name = "LOG_GLOB")]
+        log_globs: Vec<String>,
+    },
     /// Parse test metadata, apply automated fixups, and re-emit it in normalized form.
     #[clap(name = "fixup", alias = "fmt")]
     Fixup,
@@ -153,16 +159,18 @@ struct ExecReportSpec {
     report_globs: Vec<String>,
 }
 
-impl ExecReportSpec {
-    fn paths(self) -> Result<Vec<PathBuf>, AlreadyReportedToCommandline> {
-        let Self {
-            report_paths,
-            report_globs,
-        } = self;
+struct FileSpec {
+    paths: Vec<PathBuf>,
+    globs: Vec<String>,
+}
 
-        let report_globs = {
+impl FileSpec {
+    fn into_paths(self, what: impl Display) -> Result<Vec<PathBuf>, AlreadyReportedToCommandline> {
+        let Self { paths, globs } = self;
+
+        let globs = {
             let mut found_glob_parse_err = false;
-            let globs = report_globs
+            let globs = globs
                 .into_iter()
                 .filter_map(|glob| match Glob::diagnosed(&glob) {
                     Ok((glob, _diagnostics)) => Some(glob.into_owned().partition()),
@@ -175,7 +183,7 @@ impl ExecReportSpec {
                                 diag.severity()
                                     .map_or(true, |sev| sev == miette::Severity::Error)
                             })
-                            .map(Report::new_boxed);
+                            .map(|diag| Report::new_boxed(diag));
                         for report in error_reports {
                             eprintln!("{report:?}");
                         }
@@ -185,77 +193,105 @@ impl ExecReportSpec {
                 .collect::<Vec<_>>();
 
             if found_glob_parse_err {
-                log::error!("failed to parse one or more WPT report globs; bailing");
+                log::error!("failed to parse one or more globs for {what}; bailing");
                 return Err(AlreadyReportedToCommandline);
             }
 
             globs
         };
 
-        let report_paths_from_glob = {
+        let paths_from_globs = {
             let mut found_glob_walk_err = false;
-            let files = report_globs
+            let files = globs
                 .iter()
                 .flat_map(|(base_path, glob)| {
-                    glob.walk(base_path)
-                        .filter_map(|entry| match entry {
-                            Ok(entry) => Some(entry.into_path()),
-                            Err(e) => {
-                                found_glob_walk_err = true;
-                                let ctx_msg = if let Some(path) = e.path() {
-                                    format!(
-                                        "failed to enumerate files for glob `{}` at path {}",
-                                        glob,
-                                        path.display()
-                                    )
-                                } else {
-                                    format!("failed to enumerate files for glob `{glob}`")
-                                };
-                                let e = Report::msg(e).wrap_err(ctx_msg);
-                                eprintln!("{e:?}");
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>() // OPT: Can we get rid of this somehow?
+                    if let Some(glob) = glob {
+                        glob.walk(base_path)
+                            .filter_map(|entry| match entry {
+                                Ok(entry) => Some(entry.into_path()),
+                                Err(e) => {
+                                    found_glob_walk_err = true;
+                                    let ctx_msg = if let Some(path) = e.path() {
+                                        format!(
+                                            "failed to enumerate {what} from glob `{}` at path {}",
+                                            glob,
+                                            path.display()
+                                        )
+                                    } else {
+                                        format!("failed to enumerate {what} from glob `{glob}`")
+                                    };
+                                    let e = Report::msg(e).wrap_err(ctx_msg);
+                                    eprintln!("{e:?}");
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>() // OPT: Can we get rid of this somehow?
+                    } else {
+                        vec![base_path.to_owned()]
+                    }
                 })
                 .collect::<Vec<_>>();
 
             if found_glob_walk_err {
-                log::error!(concat!(
-                    "failed to enumerate files with WPT report globs, ",
-                    "see above for more details"
-                ));
+                log::error!(
+                    concat!(
+                        "failed to enumerate {} from globs, ",
+                        "see above for more details"
+                    ),
+                    what
+                );
                 return Err(AlreadyReportedToCommandline);
             }
 
             files
         };
 
-        if report_paths_from_glob.is_empty() && !report_globs.is_empty() {
-            if report_paths.is_empty() {
-                log::error!(concat!(
-                    "reports were specified exclusively via glob search, ",
-                    "but none were found; bailing"
-                ));
+        if paths_from_globs.is_empty() && !globs.is_empty() {
+            if paths.is_empty() {
+                log::error!(
+                    concat!(
+                        "{} were specified exclusively via glob search, ",
+                        "but none were found; bailing"
+                    ),
+                    what
+                );
                 return Err(AlreadyReportedToCommandline);
             } else {
-                log::warn!(concat!(
-                    "reports were specified via path and glob search, ",
-                    "but none were found via glob; ",
-                    "continuing with report paths"
-                ))
+                log::warn!(
+                    concat!(
+                        "{} were specified via path and glob search, ",
+                        "but none were found via glob; ",
+                        "continuing with direct paths"
+                    ),
+                    what
+                )
             }
         }
 
-        let exec_report_paths = report_paths
+        let exec_report_paths = paths
             .into_iter()
-            .chain(report_paths_from_glob)
+            .chain(paths_from_globs)
             .collect::<Vec<_>>();
 
-        log::trace!("working with the following WPT report files: {exec_report_paths:#?}");
-        log::info!("working with {} WPT report files", exec_report_paths.len());
+        log::trace!("working with the following {what}: {exec_report_paths:#?}");
+        log::info!("working with {} {what}", exec_report_paths.len());
 
         Ok(exec_report_paths)
+    }
+}
+
+impl ExecReportSpec {
+    fn paths(self) -> Result<Vec<PathBuf>, AlreadyReportedToCommandline> {
+        let Self {
+            report_paths,
+            report_globs,
+        } = self;
+
+        FileSpec {
+            paths: report_paths,
+            globs: report_globs,
+        }
+        .into_paths("WPT report(s)")
     }
 }
 
@@ -348,6 +384,26 @@ fn run(cli: Cli) -> ExitCode {
                     allowed: allowed_implementation_statuses,
                 },
             ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(AlreadyReportedToCommandline) => ExitCode::FAILURE,
+            }
+        }
+        Subcommand::AggregateTimingsFromLogs {
+            log_paths,
+            log_globs,
+        } => {
+            let log_paths_res = FileSpec {
+                paths: log_paths,
+                globs: log_globs,
+            }
+            .into_paths("log file(s)");
+
+            let log_paths = match log_paths_res {
+                Ok(ok) => ok,
+                Err(AlreadyReportedToCommandline) => return ExitCode::FAILURE,
+            };
+
+            match aggregate_timings_from_logs::aggregate_timings_from_logs(browser, log_paths) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(AlreadyReportedToCommandline) => ExitCode::FAILURE,
             }
@@ -1179,7 +1235,7 @@ fn render_metadata_parse_errors<'a>(
         #[label]
         span: SourceSpan,
         #[source_code]
-        source_code: NamedSource,
+        source_code: NamedSource<Arc<String>>,
         inner: Rich<'static, char>,
     }
     let source_code = file_contents.clone();
